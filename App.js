@@ -14,6 +14,7 @@ import QuizScreen from './src/screens/QuizScreen';
 import SkillScreen from './src/screens/SkillScreen';
 import TaskScreen from './src/screens/TaskScreen';
 
+
 const Stack = createNativeStackNavigator();
 
 export default function App() {
@@ -59,6 +60,7 @@ export default function App() {
             name="Task" 
             component={TaskScreen}
           />
+
         </Stack.Navigator>
       </NavigationContainer>
     </AppProvider>

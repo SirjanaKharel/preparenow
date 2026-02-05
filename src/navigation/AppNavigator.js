@@ -12,6 +12,7 @@ import {
 import { locationService, DISASTER_ZONES } from '../services/locationService';
 import { useApp } from '../context/AppContext';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import EmergencyContactsScreen from '../screens/EmergencyContactsScreen';
 
 export default function HomeScreen({ navigation }) {
   const { user, monitoringActive, setMonitoringActive, currentLocation, setCurrentLocation } = useApp();
@@ -253,7 +254,7 @@ export default function HomeScreen({ navigation }) {
             </TouchableOpacity>
             <TouchableOpacity 
               style={styles.actionButton}
-              onPress={() => navigation.navigate('Profile')}
+              onPress={() => navigation.navigate('EmergencyContacts')}
             >
               <Text style={styles.actionButtonText}>Emergency Contacts</Text>
             </TouchableOpacity>
