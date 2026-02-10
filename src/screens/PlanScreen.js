@@ -9,10 +9,28 @@ import {
   Alert,
   Modal,
   Linking,
+  Dimensions,
 } from 'react-native';
+import MapView, { Marker } from 'react-native-maps';
+import * as Location from 'expo-location';
 import * as DocumentPicker from 'expo-document-picker';
 import { storageService } from '../services/storageServices';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { SHELTERS } from '../constants/shelters';
+import { locationService } from '../services/locationService';
+
+// UK geographical bounds
+const UK_BOUNDS = {
+  minLat: 49.9,  // Southern tip (Scilly Isles)
+  maxLat: 60.9,  // Northern tip (Shetland Islands)
+  minLng: -8.2,  // Western tip (Western Ireland border)
+  maxLng: 1.8,   // Eastern tip (East Anglia)
+};
+
+const UK_CENTER = {
+  latitude: 54.5,   // Center of UK
+  longitude: -2.5,
+};
 
 export default function PlanScreen({ navigation }) {
   const [familyMembers, setFamilyMembers] = useState([]);
@@ -29,11 +47,17 @@ export default function PlanScreen({ navigation }) {
   const [tempLocation, setTempLocation] = useState('');
   const [uploadedDocs, setUploadedDocs] = useState([]);
 
+  // Shelter map state
+  const [userLocation, setUserLocation] = useState(null);
+  const [nearbyShelters, setNearbyShelters] = useState([]);
+  const [locationError, setLocationError] = useState(null);
+  const [isLoadingLocation, setIsLoadingLocation] = useState(true);
+
   const EMERGENCY_CONTACTS = [
-    { label: 'Emergency Services', number: '911' },
-    { label: 'Police Department', number: '911' },
-    { label: 'Fire Department', number: '911' },
-    { label: 'Poison Control', number: '1-800-222-1222' },
+    { label: 'Emergency Services', number: '999' },
+    { label: 'Police Department', number: '999' },
+    { label: 'Fire Department', number: '999' },
+    { label: 'NHS 111', number: '111' },
     { label: 'Local Hospital', number: '' },
     { label: 'Family Doctor', number: '' },
     { label: 'Insurance Provider', number: '' },
@@ -83,7 +107,183 @@ export default function PlanScreen({ navigation }) {
 
   useEffect(() => {
     loadData();
+    fetchLocationAndShelters();
   }, []);
+
+  const fetchLocationAndShelters = async () => {
+    setLocationError(null);
+    setIsLoadingLocation(true);
+    
+    try {
+      // Request location permission
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      
+      if (status !== 'granted') {
+        setLocationError('Location permission denied. Please enable location in settings.');
+        setIsLoadingLocation(false);
+        // Still show shelters even without location
+        showAllShelters();
+        return;
+      }
+
+      // Get current location
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      const { latitude, longitude } = location.coords;
+      setUserLocation({ latitude, longitude });
+
+      // Filter out any fake/test shelters and only use real ones
+      const realShelters = SHELTERS.filter(shelter => {
+        return shelter.name !== 'Derby Community Shelter' && 
+               shelter.name !== 'Test Shelter' &&
+               shelter.latitude && 
+               shelter.longitude &&
+               shelter.latitude >= UK_BOUNDS.minLat &&
+               shelter.latitude <= UK_BOUNDS.maxLat &&
+               shelter.longitude >= UK_BOUNDS.minLng &&
+               shelter.longitude <= UK_BOUNDS.maxLng;
+      });
+
+      // Calculate distances for real shelters
+      const sheltersWithDistance = realShelters.map(shelter => {
+        const distance = locationService.calculateDistance(
+          latitude,
+          longitude,
+          shelter.latitude,
+          shelter.longitude
+        );
+        return { ...shelter, distance };
+      });
+
+      // Sort by distance and show ALL shelters (sorted by distance)
+      const sorted = sheltersWithDistance.sort((a, b) => a.distance - b.distance);
+
+      setNearbyShelters(sorted);
+
+    } catch (error) {
+      console.error('Location error:', error);
+      setLocationError('Unable to get current location.');
+      // Show all shelters even if location fails
+      showAllShelters();
+    } finally {
+      setIsLoadingLocation(false);
+    }
+  };
+
+  // Function to show all real shelters when location is unavailable
+  const showAllShelters = () => {
+    const realShelters = SHELTERS.filter(shelter => {
+      return shelter.name !== 'Derby Community Shelter' && 
+             shelter.name !== 'Test Shelter' &&
+             shelter.latitude && 
+             shelter.longitude &&
+             shelter.latitude >= UK_BOUNDS.minLat &&
+             shelter.latitude <= UK_BOUNDS.maxLat &&
+             shelter.longitude >= UK_BOUNDS.minLng &&
+             shelter.longitude <= UK_BOUNDS.maxLng;
+    });
+    setNearbyShelters(realShelters);
+  };
+
+  // Calculate map region - always show ALL shelters visible
+  const getMapRegion = () => {
+    // Default to UK-wide view if no shelters
+    if (nearbyShelters.length === 0) {
+      return {
+        latitude: UK_CENTER.latitude,
+        longitude: UK_CENTER.longitude,
+        latitudeDelta: 10,
+        longitudeDelta: 8,
+      };
+    }
+
+    // Always show all shelters - calculate bounds to fit everything
+    const latitudes = nearbyShelters.map(s => s.latitude);
+    const longitudes = nearbyShelters.map(s => s.longitude);
+
+    // Include user location if available and within UK
+    if (userLocation && 
+        userLocation.latitude >= UK_BOUNDS.minLat && 
+        userLocation.latitude <= UK_BOUNDS.maxLat &&
+        userLocation.longitude >= UK_BOUNDS.minLng && 
+        userLocation.longitude <= UK_BOUNDS.maxLng) {
+      latitudes.push(userLocation.latitude);
+      longitudes.push(userLocation.longitude);
+    }
+
+    const minLat = Math.min(...latitudes);
+    const maxLat = Math.max(...latitudes);
+    const minLng = Math.min(...longitudes);
+    const maxLng = Math.max(...longitudes);
+
+    // Calculate deltas with generous padding to ensure all markers are visible
+    const latPadding = (maxLat - minLat) * 0.3; // 30% padding
+    const lngPadding = (maxLng - minLng) * 0.3;
+
+    const latDelta = (maxLat - minLat) + latPadding * 2;
+    const lngDelta = (maxLng - minLng) + lngPadding * 2;
+
+    return {
+      latitude: (minLat + maxLat) / 2,
+      longitude: (minLng + maxLng) / 2,
+      // Ensure minimum delta to prevent zooming in too close on single shelter
+      latitudeDelta: Math.max(latDelta, 0.5),
+      longitudeDelta: Math.max(lngDelta, 0.5),
+    };
+  };
+
+  const retryLocation = async () => {
+    setLocationError(null);
+    setIsLoadingLocation(true);
+    
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setLocationError('Location permission denied. Please enable location in settings.');
+        setIsLoadingLocation(false);
+        showAllShelters();
+        return;
+      }
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      const { latitude, longitude } = location.coords;
+      setUserLocation({ latitude, longitude });
+      
+      const realShelters = SHELTERS.filter(shelter => {
+        return shelter.name !== 'Derby Community Shelter' && 
+               shelter.name !== 'Test Shelter' &&
+               shelter.latitude && 
+               shelter.longitude &&
+               shelter.latitude >= UK_BOUNDS.minLat &&
+               shelter.latitude <= UK_BOUNDS.maxLat &&
+               shelter.longitude >= UK_BOUNDS.minLng &&
+               shelter.longitude <= UK_BOUNDS.maxLng;
+      });
+      
+      const sheltersWithDistance = realShelters.map(shelter => {
+        const distance = locationService.calculateDistance(
+          latitude,
+          longitude,
+          shelter.latitude,
+          shelter.longitude
+        );
+        return { ...shelter, distance };
+      });
+      
+      const sorted = sheltersWithDistance.sort((a, b) => a.distance - b.distance);
+      
+      setNearbyShelters(sorted);
+    } catch (error) {
+      console.error('Location error:', error);
+      setLocationError('Unable to get current location.');
+      showAllShelters();
+    } finally {
+      setIsLoadingLocation(false);
+    }
+  };
 
   const loadData = async () => {
     // Load family members
@@ -191,6 +391,87 @@ export default function PlanScreen({ navigation }) {
         </View>
 
         <View style={styles.content}>
+          {/* Shelter Map Section */}
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionTitle}>
+              {userLocation ? 'ALL UK SHELTERS (SORTED BY DISTANCE)' : 'ALL UK EMERGENCY SHELTERS'}
+            </Text>
+            {locationError && (
+              <View style={styles.errorContainer}>
+                <Text style={styles.errorText}>{locationError}</Text>
+                <TouchableOpacity style={styles.retryButton} onPress={retryLocation}>
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {isLoadingLocation ? (
+              <View style={styles.loadingContainer}>
+                <Text style={styles.loadingText}>Loading shelters...</Text>
+              </View>
+            ) : nearbyShelters.length === 0 ? (
+              <View style={styles.loadingContainer}>
+                <Text style={styles.loadingText}>No shelters available in UK.</Text>
+              </View>
+            ) : (
+              <>
+                <MapView
+                  style={styles.map}
+                  region={getMapRegion()}
+                  showsUserLocation={userLocation ? true : false}
+                  showsMyLocationButton={userLocation ? true : false}
+                  mapType="standard"
+                >
+                  {nearbyShelters.map((shelter, index) => (
+                    <Marker
+                      key={shelter.id}
+                      coordinate={{ latitude: shelter.latitude, longitude: shelter.longitude }}
+                      title={userLocation && index === 0 ? `${shelter.name} (Nearest)` : shelter.name}
+                      description={
+                        userLocation 
+                          ? `${shelter.address}\nDistance: ${(shelter.distance / 1000).toFixed(1)} km`
+                          : shelter.address
+                      }
+                      pinColor={userLocation && index === 0 ? 'red' : 'blue'}
+                    />
+                  ))}
+                </MapView>
+                
+                {/* Shelter List */}
+                <View style={styles.shelterList}>
+                  <Text style={styles.shelterListTitle}>
+                    {userLocation 
+                      ? `${nearbyShelters.length} ${nearbyShelters.length === 1 ? 'Shelter' : 'Shelters'} (Sorted by Distance)`
+                      : `${nearbyShelters.length} ${nearbyShelters.length === 1 ? 'Shelter' : 'Shelters'} Across UK`
+                    }
+                  </Text>
+                  <ScrollView style={styles.shelterScrollView} nestedScrollEnabled={true}>
+                    {nearbyShelters.slice(0, 5).map((shelter, index) => (
+                      <View key={shelter.id} style={styles.shelterItem}>
+                        <View style={styles.shelterInfo}>
+                          <Text style={styles.shelterName}>
+                            {userLocation && index === 0 && '⭐ '}
+                            {shelter.name}
+                          </Text>
+                          <Text style={styles.shelterAddress}>{shelter.address}</Text>
+                        </View>
+                        {userLocation && shelter.distance && (
+                          <Text style={styles.shelterDistance}>
+                            {(shelter.distance / 1000).toFixed(1)} km
+                          </Text>
+                        )}
+                      </View>
+                    ))}
+                    {nearbyShelters.length > 5 && (
+                      <Text style={styles.moreShelters}>
+                        + {nearbyShelters.length - 5} more shelters (tap map for details)
+                      </Text>
+                    )}
+                  </ScrollView>
+                </View>
+              </>
+            )}
+          </View>
+
           {/* Family Members Section */}
           <View style={styles.sectionCard}>
             <View style={styles.sectionHeaderRow}>
@@ -670,6 +951,96 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.xl,
     padding: SPACING.md,
     ...SHADOWS.card,
+  },
+  map: {
+    width: '100%',
+    height: 400,
+    borderRadius: BORDER_RADIUS.md,
+    marginTop: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
+  errorContainer: {
+    backgroundColor: '#FEE2E2',
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    marginTop: SPACING.sm,
+    marginBottom: SPACING.sm,
+    alignItems: 'center',
+  },
+  errorText: {
+    color: '#DC2626',
+    textAlign: 'center',
+    marginBottom: SPACING.sm,
+  },
+  retryButton: {
+    backgroundColor: '#DC2626',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  loadingContainer: {
+    backgroundColor: COLORS.surface,
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    marginTop: SPACING.sm,
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
+  shelterList: {
+    marginTop: SPACING.sm,
+    backgroundColor: COLORS.surface,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+  },
+  shelterListTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: SPACING.sm,
+  },
+  shelterScrollView: {
+    maxHeight: 200,
+  },
+  shelterItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: SPACING.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  shelterInfo: {
+    flex: 1,
+    marginRight: SPACING.md,
+  },
+  shelterName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginBottom: 2,
+  },
+  shelterAddress: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+  },
+  shelterDistance: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  moreShelters: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    marginTop: SPACING.sm,
   },
   sectionHeaderRow: {
     flexDirection: 'row',

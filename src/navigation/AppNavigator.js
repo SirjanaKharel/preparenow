@@ -12,7 +12,6 @@ import {
 import { locationService, DISASTER_ZONES } from '../services/locationService';
 import { useApp } from '../context/AppContext';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-import EmergencyContactsScreen from '../screens/EmergencyContactsScreen';
 
 export default function HomeScreen({ navigation }) {
   const { user, monitoringActive, setMonitoringActive, currentLocation, setCurrentLocation } = useApp();
