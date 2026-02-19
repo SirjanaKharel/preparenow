@@ -4,6 +4,7 @@ import { DISASTER_CONFIG } from '../constants/disasters';
 import { locationService } from '../services/locationService';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { useFocusEffect } from '@react-navigation/native';
+import { SAFETY_GUIDES } from '../constants/resources';
 
 export default function AlertsScreen({ navigation }) {
   const [events, setEvents] = useState([]);
@@ -101,10 +102,16 @@ export default function AlertsScreen({ navigation }) {
     return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
   };
 
+  const getSafetyStepsForType = (type) => {
+    const guide = SAFETY_GUIDES.find(g => g.type === type);
+    if (!guide) return [];
+    // Flatten all steps from all sections
+    return guide.sections.flatMap(section => section.steps);
+  };
+
   // Display critical events from local history (zone entries with high/critical severity) - ONLY FOR ACTIVE ZONES
   const displayCriticalAlerts = (() => {
     const activeZoneIds = activeZones.map(z => z.id);
-    
     const alerts = events
       .filter(event => 
         event.type === 'enter' && 
@@ -142,89 +149,28 @@ export default function AlertsScreen({ navigation }) {
         seenZones.add(alert.title);
       }
     }
-    
     return uniqueAlerts;
   })();
 
-  // Use warning events from local history - ONLY FOR ACTIVE ZONES
-  const displayWarningAlerts = (() => {
-    const activeZoneIds = activeZones.map(z => z.id);
-    // Combine and sort as before
-    const allWarnings = events
-      .filter(event => 
-        event.type === 'enter' && 
-        event.severity === 'warning' &&
-        activeZoneIds.includes(event.zone)
-      )
-      .map(event => ({
-        id: `event-${event.timestamp}`,
-        severity: event.severity,
-        title: event.title || 'Alert',
-        description: event.description || 'Disaster zone alert',
-        time: getTimeAgo(event.timestamp),
-        timestamp: event.timestamp,
-      }))
-      .concat(
-        allAlerts
-          .filter(alert => 
-            alert.severity === 'warning' &&
-            activeZoneIds.includes(alert.zoneId)
-          )
-          .map(alert => ({
-            id: alert.id,
-            severity: alert.severity,
-            title: alert.title,
-            description: alert.description,
-            time: getTimeAgo(alert.timestamp),
-            timestamp: alert.timestamp,
-          }))
-      )
-      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    // Deduplicate by disaster type (inferred from title/description)
-    const uniqueByType = {};
-    for (const alert of allWarnings) {
-      let type = null;
-      const lowerTitle = (alert.title || '').toLowerCase();
-      if (lowerTitle.includes('flood')) type = 'flood';
-      else if (lowerTitle.includes('fire')) type = 'fire';
-      else if (lowerTitle.includes('storm')) type = 'storm';
-      else if (lowerTitle.includes('earthquake')) type = 'earthquake';
-      else if (lowerTitle.includes('evacuation')) type = 'evacuation';
-      else if (lowerTitle.includes('tornado')) type = 'tornado';
-      else if (lowerTitle.includes('hurricane')) type = 'hurricane';
-      else if (lowerTitle.includes('tsunami')) type = 'tsunami';
-      if (!type && alert.description) {
-        const lowerDesc = alert.description.toLowerCase();
-        if (lowerDesc.includes('flood')) type = 'flood';
-        else if (lowerDesc.includes('fire')) type = 'fire';
-        else if (lowerDesc.includes('storm')) type = 'storm';
-        else if (lowerDesc.includes('earthquake')) type = 'earthquake';
-        else if (lowerDesc.includes('evacuation')) type = 'evacuation';
-        else if (lowerDesc.includes('tornado')) type = 'tornado';
-        else if (lowerDesc.includes('hurricane')) type = 'hurricane';
-        else if (lowerDesc.includes('tsunami')) type = 'tsunami';
-      }
-      if (type && !uniqueByType[type]) {
-        uniqueByType[type] = alert;
-      }
-    }
-    return Object.values(uniqueByType);
-  })();
-
-  // Display recent zone entry/exit events
+  // Display recent zone entry/exit events (only within the last 5 minutes)
   const displayRecentAlerts = (() => {
     const activeZoneIds = activeZones.map(z => z.id);
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+
     return events
       .filter(event => {
+        // Only include events within the last 5 minutes
+        if (new Date(event.timestamp) < fiveMinutesAgo) return false;
+
         if (event.type === 'enter') {
           return activeZoneIds.includes(event.zone);
         } else if (event.type === 'exit') {
-          return true; // Always show exit events
+          return true; // Always show exit events (within 5 min window)
         }
         return false;
       })
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-      .slice(0, 10)
+      .slice(0, 5) // Only show last 5 recent alerts
       .map(event => ({
         id: `event-${event.timestamp}`,
         severity: event.severity || 'info',
@@ -273,40 +219,20 @@ export default function AlertsScreen({ navigation }) {
                 <Text style={styles.alertTitle}>{alert.title}</Text>
                 <Text style={styles.alertDescription}>{alert.description}</Text>
                 <TouchableOpacity
-                  style={styles.safetyButton}
                   onPress={() => {
-                    // Try to infer disaster type from alert title or description
-                    let type = null;
-                    const lowerTitle = (alert.title || '').toLowerCase();
-                    if (lowerTitle.includes('flood')) type = 'flood';
-                    else if (lowerTitle.includes('fire')) type = 'fire';
-                    else if (lowerTitle.includes('storm')) type = 'storm';
-                    else if (lowerTitle.includes('earthquake')) type = 'earthquake';
-                    else if (lowerTitle.includes('evacuation')) type = 'evacuation';
-                    else if (lowerTitle.includes('tornado')) type = 'tornado';
-                    else if (lowerTitle.includes('hurricane')) type = 'hurricane';
-                    else if (lowerTitle.includes('tsunami')) type = 'tsunami';
-                    // fallback: try description
-                    if (!type && alert.description) {
-                      const lowerDesc = alert.description.toLowerCase();
-                      if (lowerDesc.includes('flood')) type = 'flood';
-                      else if (lowerDesc.includes('fire')) type = 'fire';
-                      else if (lowerDesc.includes('storm')) type = 'storm';
-                      else if (lowerDesc.includes('earthquake')) type = 'earthquake';
-                      else if (lowerDesc.includes('evacuation')) type = 'evacuation';
-                      else if (lowerDesc.includes('tornado')) type = 'tornado';
-                      else if (lowerDesc.includes('hurricane')) type = 'hurricane';
-                      else if (lowerDesc.includes('tsunami')) type = 'tsunami';
-                    }
-                    if (type && DISASTER_CONFIG[type] && DISASTER_CONFIG[type].safetySteps) {
-                      setSafetySteps(DISASTER_CONFIG[type].safetySteps);
-                      setSafetyTitle(DISASTER_CONFIG[type].name + ' Safety Steps');
+                    const alertType = alert.type ? alert.type.toLowerCase() : '';
+                    let safetyType = null;
+                    if (alertType.includes('fire')) safetyType = 'fire';
+                    else if (alertType.includes('flood')) safetyType = 'flood';
+                    // Add more types as needed
+                    if (safetyType) {
+                      setSafetySteps(getSafetyStepsForType(safetyType));
+                      setSafetyModalVisible(true);
                     } else {
-                      setSafetySteps(['No specific safety steps available for this alert.']);
-                      setSafetyTitle('Safety Steps');
+                      // Optionally show a message or default steps
                     }
-                    setSafetyModalVisible(true);
                   }}
+                  style={styles.safetyButton}
                 >
                   <Text style={styles.safetyButtonText}>View Safety Steps</Text>
                 </TouchableOpacity>
@@ -320,78 +246,10 @@ export default function AlertsScreen({ navigation }) {
           )}
         </View>
 
-        {/* Warnings Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>WARNINGS</Text>
-          
-          {displayWarningAlerts.length > 0 ? (
-            displayWarningAlerts.slice(0, 3).map((alert, index) => (
-              <View 
-                key={alert.id || `warning-${index}`}
-                style={styles.alertCard}
-              >
-                <View style={styles.alertHeader}>
-                  <View style={[styles.severityBadge, { backgroundColor: getSeverityColor(alert.severity) }]}>
-                    <Text style={styles.severityText}>WARNING</Text>
-                  </View>
-                  <Text style={styles.alertTime}>{alert.time}</Text>
-                </View>
-                <Text style={styles.alertTitle}>{alert.title}</Text>
-                <Text style={styles.alertDescription}>{alert.description}</Text>
-                <TouchableOpacity
-                  style={styles.detailsButton}
-                  onPress={() => {
-                    // Try to infer disaster type from alert title or description
-                    let type = null;
-                    const lowerTitle = (alert.title || '').toLowerCase();
-                    if (lowerTitle.includes('flood')) type = 'flood';
-                    else if (lowerTitle.includes('fire')) type = 'fire';
-                    else if (lowerTitle.includes('storm')) type = 'storm';
-                    else if (lowerTitle.includes('earthquake')) type = 'earthquake';
-                    else if (lowerTitle.includes('evacuation')) type = 'evacuation';
-                    else if (lowerTitle.includes('tornado')) type = 'tornado';
-                    else if (lowerTitle.includes('hurricane')) type = 'hurricane';
-                    else if (lowerTitle.includes('tsunami')) type = 'tsunami';
-                    if (!type && alert.description) {
-                      const lowerDesc = alert.description.toLowerCase();
-                      if (lowerDesc.includes('flood')) type = 'flood';
-                      else if (lowerDesc.includes('fire')) type = 'fire';
-                      else if (lowerDesc.includes('storm')) type = 'storm';
-                      else if (lowerDesc.includes('earthquake')) type = 'earthquake';
-                      else if (lowerDesc.includes('evacuation')) type = 'evacuation';
-                      else if (lowerDesc.includes('tornado')) type = 'tornado';
-                      else if (lowerDesc.includes('hurricane')) type = 'hurricane';
-                      else if (lowerDesc.includes('tsunami')) type = 'tsunami';
-                    }
-                    let steps = [];
-                    if (type && DISASTER_CONFIG[type] && DISASTER_CONFIG[type].safetySteps) {
-                      steps = DISASTER_CONFIG[type].safetySteps;
-                    }
-                    setDetailsContent({
-                      title: alert.title,
-                      description: alert.description,
-                      steps,
-                    });
-                    setDetailsModalVisible(true);
-                  }}
-                >
-                  <Text style={styles.detailsButtonText}>View Details</Text>
-                </TouchableOpacity>
-              </View>
-            ))
-          ) : (
-            <Text style={styles.noAlertsText}>No warnings at this time</Text>
-          )}
-          {displayWarningAlerts.length > 3 && (
-            <Text style={styles.moreAlertsText}>+{displayWarningAlerts.length - 3} more warnings</Text>
-          )}
-        </View>
-
         {/* Recent Alerts Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>RECENT ALERTS</Text>
           
-          {/* Show all recent alerts or allow user to expand */}
           {displayRecentAlerts.length > 0 ? (
             <>
               {(showAllRecentAlerts ? displayRecentAlerts : displayRecentAlerts.slice(0, 3)).map((alert, index) => (
@@ -415,40 +273,10 @@ export default function AlertsScreen({ navigation }) {
               )}
             </>
           ) : (
-            <Text style={styles.noAlertsText}>No recent alerts</Text>
+            <Text style={styles.noAlertsText}>No recent alerts in the last 5 minutes</Text>
           )}
         </View>
 
-        {/* All Location Events */}
-        {/*
-        {events.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>ALL LOCATION EVENTS ({events.length})</Text>
-            {events.slice(0, 10).map((event, index) => (
-              <View key={index} style={styles.eventCard}>
-                <View style={styles.eventHeader}>
-                  <View
-                    style={[
-                      styles.eventBadge,
-                      { backgroundColor: event.type === 'enter' ? getSeverityColor(event.severity) : '#6B7280' },
-                    ]}
-                  >
-                    <Text style={styles.eventBadgeText}>
-                      {event.type === 'enter' ? 'ENTERED' : 'EXITED'}
-                    </Text>
-                  </View>
-                  <Text style={styles.eventTime}>{getTimeAgo(event.timestamp)}</Text>
-                </View>
-                <Text style={styles.eventTitle}>{event.title}</Text>
-                <Text style={styles.eventDescription}>{event.description}</Text>
-                <Text style={styles.eventSeverity}>
-                  Severity: {event.severity.toUpperCase()}
-                </Text>
-              </View>
-            ))}
-          </View>
-        )}
-        */}
         <View style={styles.bottomPadding} />
       </ScrollView>
 

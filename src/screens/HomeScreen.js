@@ -9,24 +9,37 @@ import {
   RefreshControl,
   ActivityIndicator,
 } from 'react-native';
-import { locationService, DISASTER_ZONES } from '../services/locationService';
+import { locationService, subscribeToDisasterZones, unsubscribeFromDisasterZones, subscribeToLocationChanges } from '../services/locationService';
 import { useApp } from '../context/AppContext';
-import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../constants/theme';
 
 export default function HomeScreen({ navigation }) {
-  const { user, monitoringActive, setMonitoringActive, currentLocation, setCurrentLocation, userPoints } = useApp();
+  const { user, monitoringActive, setMonitoringActive, currentLocation, setCurrentLocation } = useApp();
   const [nearbyZones, setNearbyZones] = useState([]);
   const [liveAlerts, setLiveAlerts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [zoneCount, setZoneCount] = useState(0);
   const [preparednessLevel, setPreparednessLevel] = useState(0);
-  const [completedTasks, setCompletedTasks] = useState([]);
 
   useEffect(() => {
-    // Request permissions and start monitoring on app launch
     initializeMonitoring();
-    calculatePreparedness();
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToDisasterZones((zones) => {
+      setZoneCount(zones.length);
+      // NOTE: restartGeofencing removed — was causing repeated entry notifications
+      // on every Firebase zone update. UI-only update now.
+      if (currentLocation) {
+        updateNearbyZones(currentLocation);
+      }
+    });
+
+    return () => {
+      unsubscribeFromDisasterZones();
+    };
+  }, [monitoringActive, currentLocation]);
 
   useEffect(() => {
     if (currentLocation) {
@@ -34,41 +47,65 @@ export default function HomeScreen({ navigation }) {
     }
   }, [currentLocation, nearbyZones]);
 
-  // Periodic zone checking - REDUCED FREQUENCY
   useEffect(() => {
     if (monitoringActive) {
-      // Check zones immediately
       checkZonesAndUpdateAlerts();
-      
-      // Then check every 2 minutes instead of 30 seconds
       const interval = setInterval(() => {
         checkZonesAndUpdateAlerts();
       }, 120000); // 2 minutes
-
       return () => clearInterval(interval);
     }
   }, [monitoringActive]);
 
+  useEffect(() => {
+    const unsubscribeLocation = subscribeToLocationChanges(async (newCoords) => {
+      console.log('📍 Location changed via Developer Settings:', newCoords);
+      setCurrentLocation(newCoords);
+      await updateNearbyZones(newCoords);
+    });
+    return () => unsubscribeLocation();
+  }, []);
+
   const initializeMonitoring = async () => {
-    // Request permissions first
+    // Guard: if already monitoring, just refresh location — don't restart geofencing.
+    // Prevents flood of entry notifications every time the screen re-mounts.
+    if (monitoringActive) {
+      console.log('✅ Already monitoring — skipping restart, refreshing location only');
+      await loadLocation();
+      return;
+    }
+
+    setLoading(true);
     const permResult = await locationService.requestPermissions();
     if (permResult.success) {
-      // Load location
-      await loadLocation();
-      // Start monitoring
+      const locationResult = await locationService.getCurrentLocation();
+      if (!locationResult.success && locationResult.isSimulatorError) {
+        Alert.alert(
+          '📍 No Location Available',
+          'Looks like the Simulator has no GPS.\n\nGo to Developer Settings and enable "Test Location" to set a test position.',
+          [
+            { text: 'OK' },
+            { text: 'Go to Dev Settings', onPress: () => navigation.navigate('Profile') },
+          ]
+        );
+      } else if (locationResult.success) {
+        setCurrentLocation(locationResult.location.coords);
+        updateNearbyZones(locationResult.location.coords);
+      }
       const monitorResult = await locationService.startMonitoring();
       if (monitorResult.success) {
         setMonitoringActive(true);
+        setZoneCount(locationService.getZoneCount());
       }
+    } else {
+      Alert.alert('Permission Required', permResult.error);
     }
+    setLoading(false);
   };
 
   const checkZonesAndUpdateAlerts = async () => {
-    // Silently check zones without showing loading
-    // The locationService now has duplicate prevention built-in
     const result = await locationService.manualCheckZones();
     if (result.success && result.zonesTriggered.length > 0) {
-      // Reload location to update nearby zones
       await loadLocation();
     }
   };
@@ -84,34 +121,35 @@ export default function HomeScreen({ navigation }) {
   const updateNearbyZones = async (coords) => {
     const zones = await locationService.getNearbyZones(coords);
     setNearbyZones(zones);
-    
-    // Log for debugging
-    console.log('Current location:', coords.latitude.toFixed(6), coords.longitude.toFixed(6));
-    zones.forEach(zone => {
-      console.log(`${zone.id}: ${zone.distance}m away (radius: ${zone.radius}m) - Inside: ${zone.isInside}`);
-    });
   };
 
   const checkForLiveAlerts = (coords) => {
-    // Check if user is near any disaster zones
+    // Deduplicate by title + disasterType key, not just id.
+    // Firebase may store multiple zone documents for the same physical area
+    // (e.g. different radius rings), which would previously show as duplicates.
+    const seenKeys = new Set();
+
     const activeAlerts = nearbyZones
-      .filter(zone => zone.distance < 5000) // Show zones within 5km
-      .map(zone => {
-        const distanceKm = (zone.distance / 1000).toFixed(1);
-        
-        return {
-          id: zone.id,
-          type: zone.title || zone.disasterType,
-          location: zone.description || zone.title,
-          distance: distanceKm,
-          severity: zone.isInside ? 'HIGH' : distanceKm < 1 ? 'MEDIUM' : 'LOW',
-          disasterType: zone.disasterType,
-          isInside: zone.isInside,
-          zoneRadius: zone.radius,
-        };
+      .filter(zone => zone.distance < 5000)
+      .map(zone => ({
+        id: zone.id,
+        type: zone.title || zone.disasterType,
+        location: zone.description || zone.title,
+        distance: (zone.distance / 1000).toFixed(1),
+        severity: zone.isInside ? 'HIGH' : zone.distance < 1000 ? 'MEDIUM' : 'LOW',
+        disasterType: zone.disasterType,
+        isInside: zone.isInside,
+        title: zone.title,
+      }))
+      .filter(alert => {
+        // Collapse duplicates: same title + disasterType = same real-world event
+        const dedupeKey = `${alert.type}-${alert.disasterType}`;
+        if (seenKeys.has(dedupeKey)) return false;
+        seenKeys.add(dedupeKey);
+        return true;
       })
       .sort((a, b) => {
-        // Sort by: inside zones first, then by distance
+        // Inside zones always appear first
         if (a.isInside && !b.isInside) return -1;
         if (!a.isInside && b.isInside) return 1;
         return parseFloat(a.distance) - parseFloat(b.distance);
@@ -120,41 +158,18 @@ export default function HomeScreen({ navigation }) {
     setLiveAlerts(activeAlerts);
   };
 
-  const calculateDistance = (lat1, lon1, lat2, lon2) => {
-    // Haversine formula to calculate distance in km
-    const R = 6371;
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = 
-      Math.sin(dLat/2) * Math.sin(dLat/2) +
-      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-      Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return R * c;
-  };
-
-  const calculatePreparedness = () => {
-    // Calculate based on completed tasks
-    const totalTasks = 20; // Total preparation tasks
-    const completed = completedTasks.length;
-    const percentage = Math.round((completed / totalTasks) * 100);
-    setPreparednessLevel(percentage);
-  };
-
   const handleStartMonitoring = async () => {
     const permResult = await locationService.requestPermissions();
-    
     if (!permResult.success) {
       Alert.alert('Permission Required', permResult.error);
       return;
     }
-
     setLoading(true);
     const result = await locationService.startMonitoring();
     setLoading(false);
-
     if (result.success) {
       setMonitoringActive(true);
+      setZoneCount(locationService.getZoneCount());
       Alert.alert('Monitoring Active', 'PrepareNow is now monitoring disaster zones.');
       loadLocation();
     } else {
@@ -162,17 +177,44 @@ export default function HomeScreen({ navigation }) {
     }
   };
 
+  const handleStopMonitoring = async () => {
+    Alert.alert(
+      'Stop Monitoring?',
+      'Are you sure you want to stop disaster zone monitoring? You will not receive emergency alerts.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Stop',
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            const result = await locationService.stopMonitoring();
+            setLoading(false);
+            if (result.success) {
+              setMonitoringActive(false);
+              Alert.alert('Monitoring Stopped', 'Disaster zone monitoring has been stopped.');
+            } else {
+              Alert.alert('Error', result.error);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleManualZoneCheck = async () => {
     setLoading(true);
     const result = await locationService.manualCheckZones();
     setLoading(false);
-
     if (result.success) {
       if (result.zonesTriggered.length > 0) {
-        Alert.alert('Zones Detected', `You are in the following zones:\n${result.zonesTriggered.join(', ')}`);
+        Alert.alert(
+          'Zones Detected',
+          `You are currently in the following disaster zones:\n\n${result.zonesTriggered.join('\n')}`
+        );
         loadLocation();
       } else {
-        Alert.alert('No Zones', 'You are not in any disaster zones.');
+        Alert.alert('No Active Zones', 'You are not currently in any disaster zones. Stay safe!');
       }
     } else {
       Alert.alert('Error', result.error || 'Could not check zones');
@@ -186,27 +228,35 @@ export default function HomeScreen({ navigation }) {
     setRefreshing(false);
   };
 
-  const getPreparednessLevel = () => {
-    if (preparednessLevel === 0) return 'NOT STARTED';
-    if (preparednessLevel < 25) return 'LEVEL 1 - BEGINNING';
-    if (preparednessLevel < 50) return 'LEVEL 2 - IN PROGRESS';
-    if (preparednessLevel < 75) return 'LEVEL 3 - WELL PREPARED';
-    if (preparednessLevel < 100) return 'LEVEL 4 - ALMOST READY';
-    return 'LEVEL 5 - FULLY PREPARED';
+  const getPreparednessLabel = () => {
+    if (preparednessLevel >= 80) return 'Well Prepared';
+    if (preparednessLevel >= 50) return 'Getting Ready';
+    return 'Needs Attention';
   };
 
   const getSeverityColor = (severity) => {
-    switch(severity) {
-      case 'HIGH': return '#DC2626';
+    switch (severity) {
+      case 'HIGH':   return '#DC2626';
       case 'MEDIUM': return '#F59E0B';
-      case 'LOW': return '#10B981';
-      default: return COLORS.text;
+      case 'LOW':    return '#10B981';
+      default:       return COLORS.text;
+    }
+  };
+
+  const getDisasterIcon = (type) => {
+    switch (type) {
+      case 'flood':      return '🌊';
+      case 'fire':       return '🔥';
+      case 'earthquake': return '🌍';
+      case 'storm':      return '⛈️';
+      case 'evacuation': return '🚨';
+      default:           return '⚠️';
     }
   };
 
   return (
     <View style={styles.container}>
-      <ScrollView 
+      <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
@@ -226,24 +276,18 @@ export default function HomeScreen({ navigation }) {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>PREPAREDNESS STATUS</Text>
           <View style={styles.progressContainer}>
-            <View style={styles.statsRow}>
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>Total Points</Text>
-                <Text style={styles.statValue}>{userPoints.toLocaleString()}</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>Level</Text>
-                <Text style={styles.statValue}>{Math.floor(userPoints / 100)}</Text>
-              </View>
+            <Text style={styles.progressPercentage}>{preparednessLevel}%</Text>
+            <View style={styles.progressBarContainer}>
+              <View style={[styles.progressBar, { width: `${preparednessLevel}%` }]} />
             </View>
+            <Text style={styles.levelText}>{getPreparednessLabel()}</Text>
           </View>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.continueButton}
             onPress={() => navigation.navigate('Prepare')}
           >
             <Text style={styles.continueButtonText}>
-              {userPoints === 0 ? 'START PREPARING' : 'CONTINUE PREPARING'}
+              {preparednessLevel === 0 ? 'START PREPARING' : 'CONTINUE PREPARING'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -251,58 +295,63 @@ export default function HomeScreen({ navigation }) {
         {/* Alerts Card */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>LIVE ALERTS</Text>
-          
+
           {loading ? (
             <ActivityIndicator size="large" color={COLORS.primary} />
           ) : liveAlerts.length > 0 ? (
-            <>
-              {liveAlerts.map((alert) => (
-                <View key={alert.id} style={[
+            liveAlerts.map((alert) => (
+              <View
+                key={alert.id}
+                style={[
                   styles.alertItem,
-                  alert.isInside && styles.alertItemInside
-                ]}>
-                  {alert.isInside && (
-                    <View style={styles.insideBanner}>
-                      <Text style={styles.insideBannerText}>YOU ARE INSIDE THIS ZONE</Text>
-                    </View>
-                  )}
-                  <View style={styles.alertHeader}>
-                    <View style={styles.alertTitleRow}>
-                      <View style={[styles.severityBadge, { backgroundColor: getSeverityColor(alert.severity) }]}>
-                        <Text style={styles.severityText}>{alert.severity}</Text>
-                      </View>
-                    </View>
-                    <Text style={styles.alertDistance}>
-                      {alert.isInside ? 'INSIDE' : `${alert.distance} km away`}
+                  alert.isInside && {
+                    backgroundColor: '#FEF2F2',
+                    borderLeftColor: '#DC2626',
+                    borderWidth: 2,
+                    borderColor: '#DC2626',
+                  },
+                ]}
+              >
+                {alert.isInside && (
+                  <View style={{
+                    backgroundColor: '#DC2626',
+                    marginHorizontal: -SPACING.md,
+                    marginTop: -SPACING.md,
+                    marginBottom: SPACING.sm,
+                    padding: SPACING.sm,
+                    borderTopLeftRadius: BORDER_RADIUS.md,
+                    borderTopRightRadius: BORDER_RADIUS.md,
+                  }}>
+                    <Text style={{ color: '#FFF', fontWeight: '700', textAlign: 'center', fontSize: 11 }}>
+                      YOU ARE INSIDE THIS ZONE
                     </Text>
                   </View>
-                  <Text style={styles.alertType}>{alert.type}</Text>
-                  <Text style={styles.alertLocation}>{alert.location}</Text>
-                  {alert.isInside && (
-                    <View style={styles.insideDetails}>
-                      <Text style={styles.insideDetailsText}>
-                        You are currently within {alert.zoneRadius}m of this disaster zone
-                      </Text>
+                )}
+                <View style={styles.alertHeader}>
+                  <View style={styles.alertTitleRow}>
+                    <View style={styles.typeBadge}>
+                      <Text style={styles.typeText}>{inferAlertType(alert)}</Text>
                     </View>
-                  )}
+                    <View style={[styles.severityBadge, { backgroundColor: getSeverityColor(alert.severity) }]}>
+                      <Text style={styles.severityText}>{alert.severity}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.alertDistance}>
+                    {alert.isInside ? 'INSIDE' : `${alert.distance} km away`}
+                  </Text>
                 </View>
-              ))}
-              <Text style={styles.monitoringText}>
-                {monitoringActive ? 'Monitoring active - checking every 2 minutes' : 'Monitoring current location for nearby alerts'}
-              </Text>
-            </>
+                <Text style={styles.alertType}>{alert.type}</Text>
+                <Text style={styles.alertLocation}>{alert.location}</Text>
+              </View>
+            ))
           ) : (
-            <>
-              <Text style={styles.noAlertsText}>
-                {monitoringActive 
-                  ? 'No active alerts in your area' 
-                  : 'Start monitoring to receive live alerts'}
-              </Text>
-            </>
+            <Text style={{ textAlign: 'center', color: '#888', marginVertical: 16 }}>
+              No current alerts
+            </Text>
           )}
 
           {!monitoringActive && (
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.startButton}
               onPress={handleStartMonitoring}
               disabled={loading}
@@ -312,32 +361,20 @@ export default function HomeScreen({ navigation }) {
               </Text>
             </TouchableOpacity>
           )}
-
-          {monitoringActive && (
-            <TouchableOpacity 
-              style={[styles.startButton, { backgroundColor: COLORS.warning }]}
-              onPress={handleManualZoneCheck}
-              disabled={loading}
-            >
-              <Text style={styles.startButtonText}>
-                {loading ? 'Checking...' : 'Check Zones Now'}
-              </Text>
-            </TouchableOpacity>
-          )}
         </View>
 
         {/* Quick Actions */}
         <View style={styles.quickActions}>
           <Text style={styles.sectionTitle}>QUICK ACTIONS</Text>
           <View style={styles.actionButtons}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.actionButton}
-              onPress={() => Alert.alert('Find Shelter', 'Shelter finder feature coming soon')}
+              onPress={() => navigation.navigate('Plan')}
             >
               <Text style={styles.actionButtonText}>Find Shelter</Text>
             </TouchableOpacity>
-            <TouchableOpacity 
-              style={[styles.actionButton, styles.actionButtonLast]}
+            <TouchableOpacity
+              style={styles.actionButton}
               onPress={() => navigation.navigate('Profile')}
             >
               <Text style={styles.actionButtonText}>Emergency Contacts</Text>
@@ -348,38 +385,19 @@ export default function HomeScreen({ navigation }) {
 
       {/* Footer Navigation */}
       <View style={styles.footer}>
-        <TouchableOpacity 
-          style={styles.footerButton}
-          onPress={() => navigation.navigate('Home')}
-        >
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Home')}>
           <Text style={[styles.footerButtonText, styles.footerButtonActive]}>Home</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.footerButton}
-          onPress={() => navigation.navigate('Alerts')}
-        >
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Alerts')}>
           <Text style={styles.footerButtonText}>Alerts</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.footerButton}
-          onPress={() => navigation.navigate('Prepare')}
-        >
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Prepare')}>
           <Text style={styles.footerButtonText}>Prepare</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.footerButton}
-          onPress={() => navigation.navigate('Plan')}
-        >
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Plan')}>
           <Text style={styles.footerButtonText}>Plan</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.footerButton}
-          onPress={() => navigation.navigate('Profile')}
-        >
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Profile')}>
           <Text style={styles.footerButtonText}>Profile</Text>
         </TouchableOpacity>
       </View>
@@ -438,34 +456,33 @@ const styles = StyleSheet.create({
   },
   progressContainer: {
     alignItems: 'center',
-    marginVertical: SPACING.md,
   },
-  statsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    width: '100%',
-  },
-  statBox: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  statLabel: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-    fontWeight: '600',
-    marginBottom: SPACING.xs,
-  },
-  statValue: {
-    fontSize: 36,
-    fontWeight: '700',
+  progressPercentage: {
+    fontSize: 48,
+    fontWeight: 'bold',
     color: COLORS.text,
   },
-  statDivider: {
-    width: 2,
-    height: 60,
+  progressBarContainer: {
+    width: '100%',
+    height: 8,
     backgroundColor: COLORS.borderLight,
-    marginHorizontal: SPACING.md,
+    borderRadius: BORDER_RADIUS.full,
+    marginVertical: SPACING.md,
+    overflow: 'hidden',
+  },
+  progressBar: {
+    height: '100%',
+    backgroundColor: COLORS.text,
+    borderRadius: BORDER_RADIUS.full,
+  },
+  levelText: {
+    ...TYPOGRAPHY.caption,
+    fontWeight: '600',
+    color: COLORS.text,
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.xs,
+    borderRadius: BORDER_RADIUS.full,
   },
   continueButton: {
     backgroundColor: COLORS.text,
@@ -487,42 +504,6 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primary,
   },
-  alertItemInside: {
-    backgroundColor: '#FEF2F2',
-    borderLeftWidth: 4,
-    borderLeftColor: '#DC2626',
-    borderWidth: 2,
-    borderColor: '#DC2626',
-  },
-  insideBanner: {
-    backgroundColor: '#DC2626',
-    marginHorizontal: -SPACING.md,
-    marginTop: -SPACING.md,
-    marginBottom: SPACING.sm,
-    padding: SPACING.sm,
-    borderTopLeftRadius: BORDER_RADIUS.md,
-    borderTopRightRadius: BORDER_RADIUS.md,
-  },
-  insideBannerText: {
-    ...TYPOGRAPHY.caption,
-    color: '#FFFFFF',
-    fontWeight: '700',
-    textAlign: 'center',
-    letterSpacing: 1,
-  },
-  insideDetails: {
-    backgroundColor: '#FEE2E2',
-    padding: SPACING.sm,
-    borderRadius: BORDER_RADIUS.sm,
-    marginTop: SPACING.sm,
-    borderLeftWidth: 3,
-    borderLeftColor: '#DC2626',
-  },
-  insideDetailsText: {
-    ...TYPOGRAPHY.caption,
-    color: '#991B1B',
-    fontWeight: '600',
-  },
   alertHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -532,6 +513,21 @@ const styles = StyleSheet.create({
   alertTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: SPACING.sm,
+  },
+  typeBadge: {
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: SPACING.xs / 2,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  typeText: {
+    ...TYPOGRAPHY.caption,
+    color: COLORS.text,
+    fontWeight: '600',
+    fontSize: 10,
   },
   severityBadge: {
     paddingHorizontal: SPACING.sm,
@@ -560,23 +556,12 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontSize: 13,
   },
-  noAlertsText: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.text,
-    textAlign: 'center',
-    marginVertical: SPACING.md,
-  },
-  monitoringText: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-    fontSize: 11,
-  },
   startButton: {
-    backgroundColor: COLORS.primary,
+    backgroundColor: COLORS.text,
     padding: SPACING.md,
     borderRadius: BORDER_RADIUS.md,
     alignItems: 'center',
-    marginTop: SPACING.sm,
+    marginTop: SPACING.md,
   },
   startButtonText: {
     ...TYPOGRAPHY.body,
@@ -596,6 +581,7 @@ const styles = StyleSheet.create({
   actionButtons: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    gap: SPACING.md,
   },
   actionButton: {
     flex: 1,
@@ -605,10 +591,6 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: COLORS.text,
     alignItems: 'center',
-    marginRight: SPACING.md,
-  },
-  actionButtonLast: {
-    marginRight: 0,
   },
   actionButtonText: {
     ...TYPOGRAPHY.body,
@@ -647,3 +629,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
+
+const inferAlertType = (alert) => {
+  if (alert.disasterType) return alert.disasterType.charAt(0).toUpperCase() + alert.disasterType.slice(1);
+  if (alert.type) return alert.type.charAt(0).toUpperCase() + alert.type.slice(1);
+  if (alert.title) {
+    const lowerTitle = alert.title.toLowerCase();
+    if (lowerTitle.includes('fire'))       return 'Fire';
+    if (lowerTitle.includes('flood'))      return 'Flood';
+    if (lowerTitle.includes('storm'))      return 'Storm';
+    if (lowerTitle.includes('earthquake')) return 'Earthquake';
+    if (lowerTitle.includes('evacuation')) return 'Evacuation';
+  }
+  return 'Alert';
+};

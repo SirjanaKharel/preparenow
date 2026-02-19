@@ -5,6 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { AppProvider } from './src/context/AppContext';
 
 // Import all screens
+
 import HomeScreen from './src/screens/HomeScreen';
 import AlertsScreen from './src/screens/AlertsScreen';
 import PrepareScreen from './src/screens/PrepareScreen';
@@ -13,6 +14,7 @@ import ProfileScreen from './src/screens/ProfileScreen';
 import QuizScreen from './src/screens/QuizScreen';
 import SkillScreen from './src/screens/SkillScreen';
 import TaskScreen from './src/screens/TaskScreen';
+import DeveloperSettingsScreen from './src/screens/DeveloperSettingsScreen';
 
 
 const Stack = createNativeStackNavigator();
@@ -59,6 +61,11 @@ export default function App() {
           <Stack.Screen 
             name="Task" 
             component={TaskScreen}
+          />
+
+          <Stack.Screen 
+            name="DeveloperSettings" 
+            component={DeveloperSettingsScreen}
           />
 
         </Stack.Navigator>

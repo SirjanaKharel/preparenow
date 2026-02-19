@@ -123,8 +123,8 @@ export default function ProfileScreen({ navigation }) {
           {/* Menu Section */}
           <View style={styles.menuSection}>
             <Text style={styles.sectionTitle}>MENU</Text>
-            <TouchableOpacity style={styles.menuItem} onPress={() => {}}>
-              <Text style={styles.menuItemText}>Settings</Text>
+            <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('DeveloperSettings')}>
+              <Text style={styles.menuItemText}>Developer Settings</Text>
             </TouchableOpacity>
             <View style={styles.divider} />
             <TouchableOpacity style={styles.menuItem} onPress={() => {}}>
