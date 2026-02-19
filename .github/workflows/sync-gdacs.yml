@@ -23,7 +23,7 @@ jobs:
       - name: Run GDACS sync
         run: node scripts/syncGdacsToFirestore.js
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT } 
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
 
 
