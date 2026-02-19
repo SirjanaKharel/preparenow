@@ -2,8 +2,8 @@ name: Sync GDACS Disaster Data
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # every 6 hours
-  workflow_dispatch:        # allows manual trigger
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
 
 jobs:
   sync:
@@ -20,12 +20,7 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Debug Firebase secret
-        run: echo "Secret loaded! First 20 chars: ${FIREBASE_SERVICE_ACCOUNT}" | cut -c1-20
-        env:
-          FIREBASE_SERVICE_ACCOUNT: "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}"
-
       - name: Run GDACS sync
         run: node scripts/syncGdacsToFirestore.js
         env:
-          FIREBASE_SERVICE_ACCOUNT: "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}"
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
