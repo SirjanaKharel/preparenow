@@ -19,17 +19,12 @@ export default function AlertsScreen({ navigation }) {
   const [detailsContent, setDetailsContent] = useState({ title: '', description: '', steps: [] });
   const [showAllRecentAlerts, setShowAllRecentAlerts] = useState(false);
 
-  // Load data when screen comes into focus
   useFocusEffect(
     React.useCallback(() => {
       loadData();
-      
-      // Set up auto-refresh every 10 seconds while on this screen
       const refreshInterval = setInterval(() => {
         loadData();
       }, 10000);
-      
-      // Clean up interval when component unmounts or loses focus
       return () => clearInterval(refreshInterval);
     }, [])
   );
@@ -43,7 +38,6 @@ export default function AlertsScreen({ navigation }) {
   const loadActiveZones = async () => {
     const result = await locationService.getActiveZones();
     if (result.success) {
-      console.log('Active zones:', result.zones.length);
       setActiveZones(result.zones);
     }
   };
@@ -51,19 +45,15 @@ export default function AlertsScreen({ navigation }) {
   const loadEvents = async () => {
     const result = await locationService.getEventHistory();
     if (result.success) {
-      console.log('Loaded events:', result.events.length);
       setEvents(result.events);
     }
   };
 
   const loadLiveAlerts = async () => {
-    // Fetch all live alerts
     const allAlertsResult = await locationService.getLiveAlerts();
     if (allAlertsResult.success) {
       setAllAlerts(allAlertsResult.alerts);
     }
-
-    // Fetch critical alerts specifically
     const criticalResult = await locationService.getCriticalAlerts();
     if (criticalResult.success) {
       setCriticalAlerts(criticalResult.alerts);
@@ -91,13 +81,10 @@ export default function AlertsScreen({ navigation }) {
     const past = new Date(timestamp);
     const diffMs = now - past;
     const diffMins = Math.floor(diffMs / 60000);
-    
     if (diffMins < 1) return 'Just now';
     if (diffMins < 60) return `${diffMins} min ago`;
-    
     const diffHours = Math.floor(diffMins / 60);
     if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-    
     const diffDays = Math.floor(diffHours / 24);
     return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
   };
@@ -105,18 +92,48 @@ export default function AlertsScreen({ navigation }) {
   const getSafetyStepsForType = (type) => {
     const guide = SAFETY_GUIDES.find(g => g.type === type);
     if (!guide) return [];
-    // Flatten all steps from all sections
     return guide.sections.flatMap(section => section.steps);
   };
 
-  // Display critical events from local history (zone entries with high/critical severity) - ONLY FOR ACTIVE ZONES
+  const resolveDisasterType = (item) => {
+    if (item.disasterType) return item.disasterType.toLowerCase();
+    const searchStr = `${item.type || ''} ${item.title || ''}`.toLowerCase();
+    if (searchStr.includes('fire'))                         return 'fire';
+    if (searchStr.includes('flood'))                        return 'flood';
+    if (searchStr.includes('storm'))                        return 'storm';
+    if (searchStr.includes('earthquake') || searchStr.includes('eq')) return 'earthquake';
+    if (searchStr.includes('evacuation'))                   return 'evacuation';
+    return null;
+  };
+
+  const handleViewSafetySteps = (alert) => {
+    const safetyType = resolveDisasterType(alert);
+    const steps = safetyType ? getSafetyStepsForType(safetyType) : [];
+    const title = safetyType
+      ? `${safetyType.charAt(0).toUpperCase() + safetyType.slice(1)} Safety Steps`
+      : 'Safety Steps';
+    setSafetyTitle(title);
+    setSafetySteps(
+      steps.length > 0
+        ? steps
+        : [
+            'Follow official guidance from local authorities.',
+            'Stay calm and keep others informed.',
+            'Contact emergency services if in immediate danger.',
+          ]
+    );
+    setSafetyModalVisible(true);
+  };
+
+  // Critical Alerts — only zones user is currently inside, deduplicated by title
   const displayCriticalAlerts = (() => {
-    const activeZoneIds = activeZones.map(z => z.id);
-    const alerts = events
-      .filter(event => 
-        event.type === 'enter' && 
+    const activeZoneIds = new Set(activeZones.map(z => z.id));
+
+    const fromEvents = events
+      .filter(event =>
+        event.type === 'enter' &&
         (event.severity === 'critical' || event.severity === 'high') &&
-        activeZoneIds.includes(event.zone)
+        activeZoneIds.has(event.zone)
       )
       .map(event => ({
         id: `event-${event.timestamp}`,
@@ -125,66 +142,74 @@ export default function AlertsScreen({ navigation }) {
         description: event.description || 'Disaster zone alert',
         time: getTimeAgo(event.timestamp),
         timestamp: event.timestamp,
-      }))
-      .concat(
-        criticalAlerts
-          .filter(alert => activeZoneIds.includes(alert.zoneId))
-          .map(alert => ({
-            id: alert.id,
-            severity: alert.severity,
-            title: alert.title,
-            description: alert.description,
-            time: getTimeAgo(alert.timestamp),
-            timestamp: alert.timestamp,
-          }))
-      )
+        disasterType: event.disasterType,
+      }));
+
+    const fromFirestore = criticalAlerts
+      .filter(alert => activeZoneIds.has(alert.zoneId))
+      .map(alert => ({
+        id: alert.id,
+        severity: alert.severity,
+        title: alert.title,
+        description: alert.description,
+        time: getTimeAgo(alert.timestamp),
+        timestamp: alert.timestamp,
+        disasterType: alert.disasterType,
+      }));
+
+    const merged = [...fromEvents, ...fromFirestore]
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
-    // Deduplicate by title - only show the most recent event for each zone
-    const uniqueAlerts = [];
-    const seenZones = new Set();
-    for (const alert of alerts) {
-      if (!seenZones.has(alert.title)) {
-        uniqueAlerts.push(alert);
-        seenZones.add(alert.title);
-      }
-    }
-    return uniqueAlerts;
+    // Deduplicate by title — one card per real-world zone
+    const seenTitles = new Set();
+    return merged.filter(alert => {
+      if (seenTitles.has(alert.title)) return false;
+      seenTitles.add(alert.title);
+      return true;
+    });
   })();
 
-  // Display recent zone entry/exit events (only within the last 5 minutes)
+  // Recent Alerts — entry AND exit events within 5 minutes.
+  // Deduplicated by zone+eventType key so the same zone can only appear
+  // once per event type (one "Entered X", one "Left X").
   const displayRecentAlerts = (() => {
-    const activeZoneIds = activeZones.map(z => z.id);
+    const activeZoneIds = new Set(activeZones.map(z => z.id));
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
 
-    return events
+    const filtered = events
       .filter(event => {
-        // Only include events within the last 5 minutes
         if (new Date(event.timestamp) < fiveMinutesAgo) return false;
-
-        if (event.type === 'enter') {
-          return activeZoneIds.includes(event.zone);
-        } else if (event.type === 'exit') {
-          return true; // Always show exit events (within 5 min window)
-        }
+        if (event.type === 'enter') return activeZoneIds.has(event.zone);
+        if (event.type === 'exit')  return true; // always show exits
         return false;
       })
-      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-      .slice(0, 5) // Only show last 5 recent alerts
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    // One row per unique zone+eventType — collapses any remaining duplicates
+    const seenKeys = new Set();
+    return filtered
+      .filter(event => {
+        const key = `${event.type}-${event.zone}`;
+        if (seenKeys.has(key)) return false;
+        seenKeys.add(key);
+        return true;
+      })
+      .slice(0, 5)
       .map(event => ({
         id: `event-${event.timestamp}`,
         severity: event.severity || 'info',
         title: event.type === 'exit' ? `Left ${event.title}` : `Entered ${event.title}`,
         time: getTimeAgo(event.timestamp),
         timestamp: event.timestamp,
+        isExit: event.type === 'exit',
       }));
   })();
 
   return (
     <View style={styles.container}>
-      {/* Header with Back Button */}
+      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.backButton}
           onPress={() => navigation.navigate('Home')}
         >
@@ -196,17 +221,15 @@ export default function AlertsScreen({ navigation }) {
 
       <ScrollView
         style={styles.content}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         {/* Critical Alerts Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>CRITICAL ALERTS</Text>
-          
+
           {displayCriticalAlerts.length > 0 ? (
             displayCriticalAlerts.slice(0, 3).map((alert, index) => (
-              <View 
+              <View
                 key={alert.id || `critical-${index}`}
                 style={[styles.alertCard, styles.criticalCard]}
               >
@@ -219,19 +242,7 @@ export default function AlertsScreen({ navigation }) {
                 <Text style={styles.alertTitle}>{alert.title}</Text>
                 <Text style={styles.alertDescription}>{alert.description}</Text>
                 <TouchableOpacity
-                  onPress={() => {
-                    const alertType = alert.type ? alert.type.toLowerCase() : '';
-                    let safetyType = null;
-                    if (alertType.includes('fire')) safetyType = 'fire';
-                    else if (alertType.includes('flood')) safetyType = 'flood';
-                    // Add more types as needed
-                    if (safetyType) {
-                      setSafetySteps(getSafetyStepsForType(safetyType));
-                      setSafetyModalVisible(true);
-                    } else {
-                      // Optionally show a message or default steps
-                    }
-                  }}
+                  onPress={() => handleViewSafetySteps(alert)}
                   style={styles.safetyButton}
                 >
                   <Text style={styles.safetyButtonText}>View Safety Steps</Text>
@@ -249,15 +260,28 @@ export default function AlertsScreen({ navigation }) {
         {/* Recent Alerts Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>RECENT ALERTS</Text>
-          
+
           {displayRecentAlerts.length > 0 ? (
             <>
               {(showAllRecentAlerts ? displayRecentAlerts : displayRecentAlerts.slice(0, 3)).map((alert, index) => (
-                <View 
+                <View
                   key={alert.id || `info-${index}`}
-                  style={styles.recentAlertCard}
+                  style={[
+                    styles.recentAlertCard,
+                    alert.isExit && styles.recentAlertCardExit,
+                  ]}
                 >
-                  <Text style={styles.recentAlertTitle}>{alert.title}</Text>
+                  <View style={styles.recentAlertLeft}>
+                    <Text style={styles.recentAlertIndicator}>
+                      {alert.isExit ? '↗' : '↙'}
+                    </Text>
+                    <Text style={[
+                      styles.recentAlertTitle,
+                      alert.isExit && styles.recentAlertTitleExit,
+                    ]}>
+                      {alert.title}
+                    </Text>
+                  </View>
                   <Text style={styles.recentAlertTime}>{alert.time}</Text>
                 </View>
               ))}
@@ -290,9 +314,11 @@ export default function AlertsScreen({ navigation }) {
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' }}>
           <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 24, width: '85%', maxWidth: 400 }}>
             <Text style={{ fontWeight: '700', fontSize: 20, marginBottom: 12 }}>{safetyTitle}</Text>
-            {safetySteps.map((step, idx) => (
-              <Text key={idx} style={{ marginBottom: 8, fontSize: 16 }}>• {step}</Text>
-            ))}
+            <ScrollView style={{ maxHeight: 320 }}>
+              {safetySteps.map((step, idx) => (
+                <Text key={idx} style={{ marginBottom: 8, fontSize: 16 }}>• {step}</Text>
+              ))}
+            </ScrollView>
             <Pressable
               style={{ marginTop: 18, alignSelf: 'flex-end', padding: 10 }}
               onPress={() => setSafetyModalVisible(false)}
@@ -334,38 +360,19 @@ export default function AlertsScreen({ navigation }) {
 
       {/* Footer Navigation */}
       <View style={styles.footer}>
-        <TouchableOpacity 
-          style={styles.footerButton}
-          onPress={() => navigation.navigate('Home')}
-        >
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Home')}>
           <Text style={styles.footerButtonText}>Home</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.footerButton}
-          onPress={() => navigation.navigate('Alerts')}
-        >
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Alerts')}>
           <Text style={[styles.footerButtonText, styles.footerButtonActive]}>Alerts</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.footerButton}
-          onPress={() => navigation.navigate('Prepare')}
-        >
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Prepare')}>
           <Text style={styles.footerButtonText}>Prepare</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.footerButton}
-          onPress={() => navigation.navigate('Plan')}
-        >
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Plan')}>
           <Text style={styles.footerButtonText}>Plan</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.footerButton}
-          onPress={() => navigation.navigate('Profile')}
-        >
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Profile')}>
           <Text style={styles.footerButtonText}>Profile</Text>
         </TouchableOpacity>
       </View>
@@ -496,56 +503,31 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.md,
     marginBottom: SPACING.sm,
   },
+  recentAlertCardExit: {
+    backgroundColor: '#F0FFF4',
+    borderColor: '#10B981',
+  },
+  recentAlertLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: SPACING.sm,
+  },
+  recentAlertIndicator: {
+    fontSize: 16,
+    marginRight: 8,
+    color: COLORS.textSecondary,
+  },
   recentAlertTitle: {
     ...TYPOGRAPHY.body,
     color: COLORS.text,
     fontWeight: '600',
+    flexShrink: 1,
+  },
+  recentAlertTitleExit: {
+    color: '#059669',
   },
   recentAlertTime: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-  },
-  eventCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: BORDER_RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    padding: SPACING.md,
-    marginBottom: SPACING.sm,
-  },
-  eventHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: SPACING.sm,
-  },
-  eventBadge: {
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: SPACING.xs,
-    borderRadius: BORDER_RADIUS.sm,
-  },
-  eventBadgeText: {
-    ...TYPOGRAPHY.small,
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  eventTime: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-  },
-  eventTitle: {
-    ...TYPOGRAPHY.body,
-    fontWeight: '700',
-    color: COLORS.text,
-    marginBottom: SPACING.xs / 2,
-  },
-  eventDescription: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.textSecondary,
-    marginBottom: SPACING.xs / 2,
-    fontSize: 13,
-  },
-  eventSeverity: {
     ...TYPOGRAPHY.caption,
     color: COLORS.textSecondary,
   },
