@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,645 +8,499 @@ import {
   Alert,
   RefreshControl,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
-import { locationService, subscribeToDisasterZones, unsubscribeFromDisasterZones, subscribeToLocationChanges } from '../services/locationService';
+import {
+  locationService,
+  subscribeToDisasterZones,
+  unsubscribeFromDisasterZones,
+  subscribeToLocationChanges,
+} from '../services/locationService';
 import { useApp } from '../context/AppContext';
 import { PREPAREDNESS_TASKS, TOTAL_TASKS } from '../constants/tasks';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../constants/theme';
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const EMERGENCY_CONTACTS = [
+  { label: 'Emergency Services', number: '999' },
+  { label: 'NHS 111',            number: '111' },
+  { label: 'Non-Emergency',      number: '101' },
+];
+
+const SEVERITY_CONFIG = {
+  HIGH:   { color: '#DC2626', label: 'HIGH'   },
+  MEDIUM: { color: '#F59E0B', label: 'MED'    },
+  LOW:    { color: '#10B981', label: 'LOW'    },
+};
+
+const ZONE_RADIUS_KM = 5;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const getPreparednessLabel = (pct) => {
+  if (pct >= 80) return { label: 'Well Prepared',  color: '#10B981' };
+  if (pct >= 50) return { label: 'Getting Ready',  color: '#F59E0B' };
+  if (pct > 0)   return { label: 'In Progress',    color: '#F59E0B' };
+  return               { label: 'Needs Attention', color: '#DC2626' };
+};
+
+const buildAlerts = (nearbyZones) => {
+  const seenKeys = new Set();
+  return nearbyZones
+    .filter(zone => zone.distance < ZONE_RADIUS_KM * 1000)
+    .map(zone => ({
+      id:           zone.id,
+      type:         zone.title || zone.disasterType,
+      location:     zone.description || zone.title,
+      distance:     (zone.distance / 1000).toFixed(1),
+      severity:     zone.isInside ? 'HIGH' : zone.distance < 1000 ? 'MEDIUM' : 'LOW',
+      disasterType: zone.disasterType,
+      isInside:     zone.isInside,
+      title:        zone.title,
+    }))
+    .filter(alert => {
+      const key = `${alert.type}-${alert.disasterType}`;
+      if (seenKeys.has(key)) return false;
+      seenKeys.add(key);
+      return true;
+    })
+    .sort((a, b) => {
+      if (a.isInside !== b.isInside) return a.isInside ? -1 : 1;
+      return parseFloat(a.distance) - parseFloat(b.distance);
+    });
+};
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+const AlertCard = ({ alert }) => {
+  const cfg = SEVERITY_CONFIG[alert.severity] || {};
+  return (
+    <View style={[styles.alertCard, alert.isInside && styles.alertCardInside]}>
+      {alert.isInside && (
+        <View style={styles.insideStripe}>
+          <Text style={styles.insideStripeText}>YOU ARE INSIDE THIS ZONE</Text>
+        </View>
+      )}
+      <View style={styles.alertCardBody}>
+        <View style={styles.alertLeft}>
+          <View style={styles.alertInfo}>
+            <Text style={styles.alertTitle} numberOfLines={1}>{alert.type}</Text>
+            <Text style={styles.alertLocation} numberOfLines={1}>{alert.location}</Text>
+          </View>
+        </View>
+        <View style={styles.alertRight}>
+          <View style={[styles.severityBadge, { backgroundColor: cfg.color || '#374151' }]}>
+            <Text style={styles.severityText}>{cfg.label || alert.severity}</Text>
+          </View>
+          <Text style={styles.alertDistance}>
+            {alert.isInside ? 'INSIDE' : `${alert.distance} km`}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+};
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
+
 export default function HomeScreen({ navigation }) {
-  const { user, monitoringActive, setMonitoringActive, currentLocation, setCurrentLocation, completedTasks } = useApp();
+  const {
+    user,
+    monitoringActive, setMonitoringActive,
+    currentLocation,  setCurrentLocation,
+    completedTasks,
+  } = useApp();
+
   const [nearbyZones, setNearbyZones] = useState([]);
-  const [liveAlerts, setLiveAlerts] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [zoneCount, setZoneCount] = useState(0);
+  const [liveAlerts,  setLiveAlerts]  = useState([]);
+  const [loading,     setLoading]     = useState(false);
+  const [refreshing,  setRefreshing]  = useState(false);
 
-  // ✅ Preparedness % = completed tasks (that exist in our 14-task list) / 14
   const completedCount = completedTasks
-    ? completedTasks.filter(id => PREPAREDNESS_TASKS.some(task => task.id === id)).length
+    ? completedTasks.filter(id => PREPAREDNESS_TASKS.some(t => t.id === id)).length
     : 0;
-  const preparednessLevel = TOTAL_TASKS > 0 ? Math.round((completedCount / TOTAL_TASKS) * 100) : 0;
+  const preparednessLevel = TOTAL_TASKS > 0
+    ? Math.round((completedCount / TOTAL_TASKS) * 100)
+    : 0;
+  const { label: prepLabel, color: prepColor } = getPreparednessLabel(preparednessLevel);
 
-  useEffect(() => {
-    initializeMonitoring();
+  const updateNearbyZones = useCallback(async (coords) => {
+    const zones = await locationService.getNearbyZones(coords);
+    setNearbyZones(zones);
   }, []);
 
-  useEffect(() => {
-    const unsubscribe = subscribeToDisasterZones((zones) => {
-      setZoneCount(zones.length);
-      if (currentLocation) {
-        updateNearbyZones(currentLocation);
-      }
-    });
-    return () => {
-      unsubscribeFromDisasterZones();
-    };
-  }, [monitoringActive, currentLocation]);
-
-  useEffect(() => {
-    if (currentLocation) {
-      checkForLiveAlerts(currentLocation);
-    }
-  }, [currentLocation, nearbyZones]);
-
-  useEffect(() => {
-    if (monitoringActive) {
-      checkZonesAndUpdateAlerts();
-      const interval = setInterval(() => {
-        checkZonesAndUpdateAlerts();
-      }, 120000); // 2 minutes
-      return () => clearInterval(interval);
-    }
-  }, [monitoringActive]);
-
-  useEffect(() => {
-    const unsubscribeLocation = subscribeToLocationChanges(async (newCoords) => {
-      console.log('📍 Location changed via Developer Settings:', newCoords);
-      setCurrentLocation(newCoords);
-      await updateNearbyZones(newCoords);
-    });
-    return () => unsubscribeLocation();
-  }, []);
-
-  const initializeMonitoring = async () => {
-    if (monitoringActive) {
-      console.log('✅ Already monitoring — skipping restart, refreshing location only');
-      await loadLocation();
-      return;
-    }
-
-    setLoading(true);
-    const permResult = await locationService.requestPermissions();
-    if (permResult.success) {
-      const locationResult = await locationService.getCurrentLocation();
-      if (!locationResult.success && locationResult.isSimulatorError) {
-        Alert.alert(
-          '📍 No Location Available',
-          'Looks like the Simulator has no GPS.\n\nGo to Developer Settings and enable "Test Location" to set a test position.',
-          [
-            { text: 'OK' },
-            { text: 'Go to Dev Settings', onPress: () => navigation.navigate('Profile') },
-          ]
-        );
-      } else if (locationResult.success) {
-        setCurrentLocation(locationResult.location.coords);
-        updateNearbyZones(locationResult.location.coords);
-      }
-      const monitorResult = await locationService.startMonitoring();
-      if (monitorResult.success) {
-        setMonitoringActive(true);
-        setZoneCount(locationService.getZoneCount());
-      }
-    } else {
-      Alert.alert('Permission Required', permResult.error);
-    }
-    setLoading(false);
-  };
-
-  const checkZonesAndUpdateAlerts = async () => {
-    const result = await locationService.manualCheckZones();
-    if (result.success && result.zonesTriggered.length > 0) {
-      await loadLocation();
-    }
-  };
-
-  const loadLocation = async () => {
+  const loadLocation = useCallback(async () => {
     const result = await locationService.getCurrentLocation();
     if (result.success) {
       setCurrentLocation(result.location.coords);
       updateNearbyZones(result.location.coords);
     }
-  };
+  }, [updateNearbyZones]);
 
-  const updateNearbyZones = async (coords) => {
-    const zones = await locationService.getNearbyZones(coords);
-    setNearbyZones(zones);
-  };
+  const checkZonesAndUpdate = useCallback(async () => {
+    const result = await locationService.manualCheckZones();
+    if (result.success && result.zonesTriggered.length > 0) {
+      await loadLocation();
+    }
+  }, [loadLocation]);
 
-  const checkForLiveAlerts = (coords) => {
-    const seenKeys = new Set();
+  useEffect(() => {
+    setLiveAlerts(buildAlerts(nearbyZones));
+  }, [nearbyZones]);
 
-    const activeAlerts = nearbyZones
-      .filter(zone => zone.distance < 5000)
-      .map(zone => ({
-        id: zone.id,
-        type: zone.title || zone.disasterType,
-        location: zone.description || zone.title,
-        distance: (zone.distance / 1000).toFixed(1),
-        severity: zone.isInside ? 'HIGH' : zone.distance < 1000 ? 'MEDIUM' : 'LOW',
-        disasterType: zone.disasterType,
-        isInside: zone.isInside,
-        title: zone.title,
-      }))
-      .filter(alert => {
-        const dedupeKey = `${alert.type}-${alert.disasterType}`;
-        if (seenKeys.has(dedupeKey)) return false;
-        seenKeys.add(dedupeKey);
-        return true;
-      })
-      .sort((a, b) => {
-        if (a.isInside && !b.isInside) return -1;
-        if (!a.isInside && b.isInside) return 1;
-        return parseFloat(a.distance) - parseFloat(b.distance);
-      });
+  useEffect(() => {
+    const unsubscribe = subscribeToDisasterZones(() => {
+      if (currentLocation) updateNearbyZones(currentLocation);
+    });
+    return () => unsubscribeFromDisasterZones();
+  }, [currentLocation]);
 
-    setLiveAlerts(activeAlerts);
+  useEffect(() => {
+    if (!monitoringActive) return;
+    checkZonesAndUpdate();
+    const interval = setInterval(checkZonesAndUpdate, 120000);
+    return () => clearInterval(interval);
+  }, [monitoringActive]);
+
+  useEffect(() => {
+    const unsub = subscribeToLocationChanges(async (coords) => {
+      setCurrentLocation(coords);
+      await updateNearbyZones(coords);
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    initializeMonitoring();
+  }, []);
+
+  const initializeMonitoring = async () => {
+    if (monitoringActive) { await loadLocation(); return; }
+    setLoading(true);
+    const permResult = await locationService.requestPermissions();
+    if (permResult.success) {
+      const locResult = await locationService.getCurrentLocation();
+      if (!locResult.success && locResult.isSimulatorError) {
+        Alert.alert(
+          'No Location Available',
+          'Simulator has no GPS.\n\nGo to Developer Settings to set a test position.',
+          [{ text: 'OK' }, { text: 'Dev Settings', onPress: () => navigation.navigate('Profile') }]
+        );
+      } else if (locResult.success) {
+        setCurrentLocation(locResult.location.coords);
+        updateNearbyZones(locResult.location.coords);
+      }
+      const monResult = await locationService.startMonitoring();
+      if (monResult.success) setMonitoringActive(true);
+    } else {
+      Alert.alert('Permission Required', permResult.error);
+    }
+    setLoading(false);
   };
 
   const handleStartMonitoring = async () => {
     const permResult = await locationService.requestPermissions();
-    if (!permResult.success) {
-      Alert.alert('Permission Required', permResult.error);
-      return;
-    }
+    if (!permResult.success) { Alert.alert('Permission Required', permResult.error); return; }
     setLoading(true);
     const result = await locationService.startMonitoring();
     setLoading(false);
-    if (result.success) {
-      setMonitoringActive(true);
-      setZoneCount(locationService.getZoneCount());
-      Alert.alert('Monitoring Active', 'PrepareNow is now monitoring disaster zones.');
-      loadLocation();
-    } else {
-      Alert.alert('Error', result.error);
-    }
+    if (result.success) { setMonitoringActive(true); loadLocation(); }
+    else Alert.alert('Error', result.error);
   };
 
-  const handleStopMonitoring = async () => {
+  const handleCall = (contact) => {
     Alert.alert(
-      'Stop Monitoring?',
-      'Are you sure you want to stop disaster zone monitoring? You will not receive emergency alerts.',
+      `Call ${contact.label}`,
+      `Dial ${contact.number}?`,
       [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Stop',
-          style: 'destructive',
-          onPress: async () => {
-            setLoading(true);
-            const result = await locationService.stopMonitoring();
-            setLoading(false);
-            if (result.success) {
-              setMonitoringActive(false);
-              Alert.alert('Monitoring Stopped', 'Disaster zone monitoring has been stopped.');
-            } else {
-              Alert.alert('Error', result.error);
-            }
-          },
-        },
+        { text: `Call ${contact.number}`, style: 'destructive', onPress: () => Linking.openURL(`tel:${contact.number}`) },
       ]
     );
   };
-
-  const handleManualZoneCheck = async () => {
-    setLoading(true);
-    const result = await locationService.manualCheckZones();
-    setLoading(false);
-    if (result.success) {
-      if (result.zonesTriggered.length > 0) {
-        Alert.alert(
-          'Zones Detected',
-          `You are currently in the following disaster zones:\n\n${result.zonesTriggered.join('\n')}`
-        );
-        loadLocation();
-      } else {
-        Alert.alert('No Active Zones', 'You are not currently in any disaster zones. Stay safe!');
-      }
-    } else {
-      Alert.alert('Error', result.error || 'Could not check zones');
-    }
-  };
-
-  const onRefresh = async () => {
     setRefreshing(true);
-    await loadLocation();
-    await checkZonesAndUpdateAlerts();
+    await Promise.all([loadLocation(), checkZonesAndUpdate()]);
     setRefreshing(false);
-  };
-
-  const getPreparednessLabel = () => {
-    if (preparednessLevel >= 80) return 'Well Prepared';
-    if (preparednessLevel >= 50) return 'Getting Ready';
-    return 'Needs Attention';
-  };
-
-  const getSeverityColor = (severity) => {
-    switch (severity) {
-      case 'HIGH':   return '#DC2626';
-      case 'MEDIUM': return '#F59E0B';
-      case 'LOW':    return '#10B981';
-      default:       return COLORS.text;
-    }
-  };
-
-  const getDisasterIcon = (type) => {
-    switch (type) {
-      case 'flood':      return '🌊';
-      case 'fire':       return '🔥';
-      case 'earthquake': return '🌍';
-      case 'storm':      return '⛈️';
-      case 'evacuation': return '🚨';
-      default:           return '⚠️';
-    }
   };
 
   return (
     <View style={styles.container}>
       <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
+        contentContainerStyle={styles.scroll}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#FFFFFF" />}
+        showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
+        {/* ── Header ── */}
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>PREPARENOW</Text>
-          <Text style={styles.welcomeText}>
-            Welcome back, {user?.displayName || 'User'}
-          </Text>
-          <Text style={styles.subtitle}>Stay Safe, Stay Prepared</Text>
+          <Text style={styles.appLabel}>PREPARENOW</Text>
+          <Text style={styles.pageTitle}>Welcome back{user?.displayName ? `, ${user.displayName.split(' ')[0]}` : ''}</Text>
+          <Text style={styles.pageSubtitle}>Stay safe, stay prepared</Text>
         </View>
 
-        {/* Preparedness Status Card */}
+        {/* ── Emergency Contacts ── */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>PREPAREDNESS STATUS</Text>
-          <View style={styles.progressContainer}>
-            <Text style={styles.progressPercentage}>{preparednessLevel}%</Text>
-            <View style={styles.progressBarContainer}>
-              <View style={[styles.progressBar, { width: `${preparednessLevel}%` }]} />
-            </View>
-            <Text style={styles.levelText}>{getPreparednessLabel()}</Text>
+          <Text style={styles.sectionLabel}>EMERGENCY CONTACTS</Text>
+          <View style={styles.contactsRow}>
+            {EMERGENCY_CONTACTS.map(c => (
+              <TouchableOpacity
+                key={c.number}
+                style={styles.contactBtn}
+                onPress={() => handleCall(c)}
+                activeOpacity={0.75}
+              >
+                <Text style={styles.contactNumber}>{c.number}</Text>
+                <Text style={styles.contactLabel}>{c.label}</Text>
+              </TouchableOpacity>
+            ))}
           </View>
-          {/* Show tasks completed count beneath the bar */}
-          <Text style={styles.tasksCompletedText}>
-            {completedCount} of {TOTAL_TASKS} tasks completed
-          </Text>
-          <TouchableOpacity
-            style={styles.continueButton}
-            onPress={() => navigation.navigate('Prepare')}
-          >
-            <Text style={styles.continueButtonText}>
-              {preparednessLevel === 0 ? 'START PREPARING' : preparednessLevel === 100 ? 'VIEW TASKS' : 'CONTINUE PREPARING'}
+        </View>
+
+        {/* ── Preparedness Card ── */}
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>PREPAREDNESS STATUS</Text>
+          <View style={styles.prepRow}>
+            <Text style={styles.prepPct}>{preparednessLevel}%</Text>
+            <View style={styles.prepMeta}>
+              <View style={[styles.prepBadge, { backgroundColor: prepColor }]}>
+                <Text style={styles.prepBadgeText}>{prepLabel}</Text>
+              </View>
+              <Text style={styles.prepCount}>{completedCount} / {TOTAL_TASKS} tasks</Text>
+            </View>
+          </View>
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${preparednessLevel}%`, backgroundColor: prepColor }]} />
+          </View>
+          <TouchableOpacity style={styles.darkBtn} onPress={() => navigation.navigate('Prepare')} activeOpacity={0.85}>
+            <Text style={styles.darkBtnText}>
+              {preparednessLevel === 0 ? 'Start Preparing' : preparednessLevel === 100 ? 'View All Tasks' : 'Continue Preparing'}
             </Text>
           </TouchableOpacity>
         </View>
 
-        {/* Alerts Card */}
+        {/* ── Live Alerts ── */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>LIVE ALERTS</Text>
+          <View style={styles.cardHeaderRow}>
+            <Text style={styles.sectionLabel}>LIVE ALERTS</Text>
+            {liveAlerts.length > 0 && (
+              <View style={styles.countBadge}>
+                <Text style={styles.countBadgeText}>{liveAlerts.length}</Text>
+              </View>
+            )}
+          </View>
 
           {loading ? (
-            <ActivityIndicator size="large" color={COLORS.primary} />
+            <ActivityIndicator size="small" color="#111827" style={{ marginVertical: SPACING.lg }} />
           ) : liveAlerts.length > 0 ? (
-            liveAlerts.map((alert) => (
-              <View
-                key={alert.id}
-                style={[
-                  styles.alertItem,
-                  alert.isInside && {
-                    backgroundColor: '#FEF2F2',
-                    borderLeftColor: '#DC2626',
-                    borderWidth: 2,
-                    borderColor: '#DC2626',
-                  },
-                ]}
-              >
-                {alert.isInside && (
-                  <View style={{
-                    backgroundColor: '#DC2626',
-                    marginHorizontal: -SPACING.md,
-                    marginTop: -SPACING.md,
-                    marginBottom: SPACING.sm,
-                    padding: SPACING.sm,
-                    borderTopLeftRadius: BORDER_RADIUS.md,
-                    borderTopRightRadius: BORDER_RADIUS.md,
-                  }}>
-                    <Text style={{ color: '#FFF', fontWeight: '700', textAlign: 'center', fontSize: 11 }}>
-                      YOU ARE INSIDE THIS ZONE
-                    </Text>
-                  </View>
-                )}
-                <View style={styles.alertHeader}>
-                  <View style={styles.alertTitleRow}>
-                    <View style={styles.typeBadge}>
-                      <Text style={styles.typeText}>{inferAlertType(alert)}</Text>
-                    </View>
-                    <View style={[styles.severityBadge, { backgroundColor: getSeverityColor(alert.severity) }]}>
-                      <Text style={styles.severityText}>{alert.severity}</Text>
-                    </View>
-                  </View>
-                  <Text style={styles.alertDistance}>
-                    {alert.isInside ? 'INSIDE' : `${alert.distance} km away`}
-                  </Text>
-                </View>
-                <Text style={styles.alertType}>{alert.type}</Text>
-                <Text style={styles.alertLocation}>{alert.location}</Text>
-              </View>
-            ))
+            liveAlerts.map(alert => <AlertCard key={alert.id} alert={alert} />)
           ) : (
-            <Text style={{ textAlign: 'center', color: '#888', marginVertical: 16 }}>
-              No current alerts
+            <Text style={styles.emptyHint}>
+              {monitoringActive ? 'No active alerts nearby' : 'Enable monitoring to see alerts'}
             </Text>
           )}
 
           {!monitoringActive && (
-            <TouchableOpacity
-              style={styles.startButton}
-              onPress={handleStartMonitoring}
-              disabled={loading}
-            >
-              <Text style={styles.startButtonText}>
-                {loading ? 'Starting...' : 'Start Monitoring'}
-              </Text>
-            </TouchableOpacity>
+            <View style={styles.monitoringBanner}>
+              <View style={styles.monitoringInfo}>
+                <Text style={styles.monitoringTitle}>Monitoring Off</Text>
+                <Text style={styles.monitoringSubtitle}>Enable to receive disaster alerts</Text>
+              </View>
+              <TouchableOpacity style={styles.darkBtn} onPress={handleStartMonitoring} disabled={loading}>
+                <Text style={styles.darkBtnText}>{loading ? '…' : 'Enable'}</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
 
-        {/* Quick Actions */}
-        <View style={styles.quickActions}>
-          <Text style={styles.sectionTitle}>QUICK ACTIONS</Text>
-          <View style={styles.actionButtons}>
-            <TouchableOpacity
-              style={styles.actionButton}
-              onPress={() => navigation.navigate('Plan')}
-            >
-              <Text style={styles.actionButtonText}>Find Shelter</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.actionButton}
-              onPress={() => navigation.navigate('Profile')}
-            >
-              <Text style={styles.actionButtonText}>Emergency Contacts</Text>
-            </TouchableOpacity>
+        {/* ── Quick Actions ── */}
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>QUICK ACTIONS</Text>
+          <View style={styles.actionsGrid}>
+            {[
+              { label: 'Find Shelter',        screen: 'Plan'    },
+              { label: 'View Alerts',         screen: 'Alerts'  },
+              { label: 'Emergency Contacts',  screen: 'Plan'    },
+              { label: 'My Tasks',            screen: 'Prepare' },
+            ].map(item => (
+              <TouchableOpacity
+                key={item.label}
+                style={styles.actionBtn}
+                onPress={() => navigation.navigate(item.screen)}
+                activeOpacity={0.75}
+              >
+                <Text style={styles.actionBtnText}>{item.label}</Text>
+              </TouchableOpacity>
+            ))}
           </View>
         </View>
+
+        <View style={{ height: 100 }} />
       </ScrollView>
 
-      {/* Footer Navigation */}
+      {/* ── Footer ── */}
       <View style={styles.footer}>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Home')}>
-          <Text style={[styles.footerButtonText, styles.footerButtonActive]}>Home</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Alerts')}>
-          <Text style={styles.footerButtonText}>Alerts</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Prepare')}>
-          <Text style={styles.footerButtonText}>Prepare</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Plan')}>
-          <Text style={styles.footerButtonText}>Plan</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Profile')}>
-          <Text style={styles.footerButtonText}>Profile</Text>
-        </TouchableOpacity>
+        {['Home', 'Alerts', 'Prepare', 'Plan', 'Profile'].map(screen => (
+          <TouchableOpacity key={screen} style={styles.footerBtn} onPress={() => navigation.navigate(screen)}>
+            <Text style={[styles.footerBtnText, screen === 'Home' && styles.footerBtnActive]}>{screen}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
     </View>
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingBottom: SPACING.md,
-  },
+  container: { flex: 1, backgroundColor: '#F5F5F0' },
+  scroll:    { paddingBottom: 20 },
+
+  // Header — dark, matches all other screens
   header: {
-    padding: SPACING.lg,
-    paddingTop: SPACING.xxl + 20,
-    backgroundColor: COLORS.background,
+    backgroundColor: '#111827',
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.xxl + 24,
+    paddingBottom: SPACING.lg,
+    borderBottomWidth: 3,
+    borderBottomColor: '#DC2626',
   },
-  headerTitle: {
-    ...TYPOGRAPHY.body,
-    fontWeight: '600',
-    color: COLORS.text,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  welcomeText: {
-    ...TYPOGRAPHY.h1,
-    color: COLORS.text,
-    marginTop: SPACING.sm,
-  },
-  subtitle: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.textSecondary,
-    marginTop: SPACING.xs,
-  },
+  appLabel:     { fontSize: 10, fontWeight: '700', color: '#6B7280', letterSpacing: 2, marginBottom: 6 },
+  pageTitle:    { fontSize: 28, fontWeight: '800', color: '#FFFFFF', marginBottom: 2 },
+  pageSubtitle: { fontSize: 13, color: '#6B7280' },
+
+  // Card
   card: {
-    margin: SPACING.md,
-    marginTop: SPACING.sm,
-    padding: SPACING.md,
     backgroundColor: '#FFFFFF',
-    borderRadius: BORDER_RADIUS.lg,
-    borderWidth: 2,
-    borderColor: COLORS.text,
-  },
-  cardTitle: {
-    ...TYPOGRAPHY.caption,
-    fontWeight: '700',
-    color: COLORS.text,
-    letterSpacing: 1,
-    marginBottom: SPACING.md,
-  },
-  progressContainer: {
-    alignItems: 'center',
-  },
-  progressPercentage: {
-    fontSize: 48,
-    fontWeight: 'bold',
-    color: COLORS.text,
-  },
-  progressBarContainer: {
-    width: '100%',
-    height: 8,
-    backgroundColor: COLORS.borderLight,
-    borderRadius: BORDER_RADIUS.full,
-    marginVertical: SPACING.md,
-    overflow: 'hidden',
-  },
-  progressBar: {
-    height: '100%',
-    backgroundColor: COLORS.text,
-    borderRadius: BORDER_RADIUS.full,
-  },
-  levelText: {
-    ...TYPOGRAPHY.caption,
-    fontWeight: '600',
-    color: COLORS.text,
-    backgroundColor: COLORS.surface,
-    paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.xs,
-    borderRadius: BORDER_RADIUS.full,
-  },
-  tasksCompletedText: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-    textAlign: 'center',
-    marginTop: SPACING.sm,
-    fontSize: 12,
-  },
-  continueButton: {
-    backgroundColor: COLORS.text,
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    alignItems: 'center',
+    marginHorizontal: SPACING.md,
     marginTop: SPACING.md,
-  },
-  continueButtonText: {
-    ...TYPOGRAPHY.body,
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  alertItem: {
-    backgroundColor: COLORS.surface,
+    borderRadius: 14,
     padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    marginBottom: SPACING.sm,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.primary,
-  },
-  alertHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: SPACING.xs,
-  },
-  alertTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: SPACING.sm,
-  },
-  typeBadge: {
-    backgroundColor: COLORS.surface,
     borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: SPACING.xs / 2,
-    borderRadius: BORDER_RADIUS.sm,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 1,
   },
-  typeText: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.text,
-    fontWeight: '600',
-    fontSize: 10,
-  },
-  severityBadge: {
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: SPACING.xs / 2,
-    borderRadius: BORDER_RADIUS.sm,
-  },
-  severityText: {
-    ...TYPOGRAPHY.caption,
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 10,
-  },
-  alertDistance: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-    fontWeight: '600',
-  },
-  alertType: {
-    ...TYPOGRAPHY.body,
-    fontWeight: '700',
-    color: COLORS.text,
-    marginBottom: SPACING.xs / 2,
-  },
-  alertLocation: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.textSecondary,
-    fontSize: 13,
-  },
-  startButton: {
-    backgroundColor: COLORS.text,
+  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md, gap: SPACING.sm },
+  sectionLabel:  { fontSize: 11, fontWeight: '700', color: '#6B7280', letterSpacing: 1.5, marginBottom: SPACING.md },
+  emptyHint:     { fontSize: 13, color: '#9CA3AF', paddingVertical: SPACING.sm },
+
+  // Preparedness
+  prepRow:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm },
+  prepPct:    { fontSize: 44, fontWeight: '800', color: '#111827', lineHeight: 48 },
+  prepMeta:   { alignItems: 'flex-end', gap: 6 },
+  prepBadge:  { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6 },
+  prepBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  prepCount:  { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
+  progressTrack: { height: 6, backgroundColor: '#F3F4F6', borderRadius: 3, overflow: 'hidden', marginBottom: SPACING.md },
+  progressFill:  { height: '100%', borderRadius: 3 },
+
+  // Dark button — shared style
+  darkBtn: {
+    backgroundColor: '#111827',
     padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
+    borderRadius: 10,
     alignItems: 'center',
-    marginTop: SPACING.md,
   },
-  startButtonText: {
-    ...TYPOGRAPHY.body,
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  quickActions: {
-    padding: SPACING.md,
-  },
-  sectionTitle: {
-    ...TYPOGRAPHY.caption,
-    fontWeight: '700',
-    color: COLORS.text,
-    letterSpacing: 1,
+  darkBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
+
+  // Count badge
+  countBadge: {
+    backgroundColor: '#DC2626',
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 5,
     marginBottom: SPACING.md,
   },
-  actionButtons: {
+  countBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+
+  // Alert cards
+  alertCard: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    marginBottom: SPACING.sm,
+    overflow: 'hidden',
+    backgroundColor: '#fff',
+  },
+  alertCardInside: { borderColor: '#DC2626', backgroundColor: '#FEF2F2' },
+  insideStripe:    { backgroundColor: '#DC2626', paddingVertical: 5, paddingHorizontal: SPACING.md },
+  insideStripeText:{ color: '#fff', fontWeight: '700', fontSize: 10, letterSpacing: 0.5 },
+  alertCardBody:   { flexDirection: 'row', alignItems: 'center', padding: SPACING.md, gap: SPACING.sm },
+  alertLeft:       { flex: 1 },
+  alertInfo:       {},
+  alertTitle:      { fontSize: 14, fontWeight: '700', color: '#111827' },
+  alertLocation:   { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
+  alertRight:      { alignItems: 'flex-end', gap: 4 },
+  severityBadge:   { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  severityText:    { color: '#fff', fontSize: 10, fontWeight: '700' },
+  alertDistance:   { fontSize: 11, color: '#9CA3AF', fontWeight: '600' },
+
+  // Monitoring banner
+  monitoringBanner: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#F9FAFB',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: SPACING.md,
+    marginTop: SPACING.sm,
     gap: SPACING.md,
   },
-  actionButton: {
+  monitoringInfo:    { flex: 1 },
+  monitoringTitle:   { fontSize: 14, fontWeight: '700', color: '#111827' },
+  monitoringSubtitle:{ fontSize: 12, color: '#9CA3AF', marginTop: 2 },
+
+  // Emergency contacts
+  contactsRow:   { flexDirection: 'row', gap: SPACING.sm },
+  contactBtn: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    borderWidth: 2,
-    borderColor: COLORS.text,
+    backgroundColor: '#111827',
+    borderRadius: 10,
+    paddingVertical: 10,
     alignItems: 'center',
   },
-  actionButtonText: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.text,
-    fontWeight: '600',
-    textAlign: 'center',
-    fontSize: 13,
+  contactNumber: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
+  contactLabel:  { fontSize: 9, color: '#9CA3AF', marginTop: 2, fontWeight: '600', letterSpacing: 0.5 },
+
+  // Quick actions grid
+  actionsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm },
+  actionBtn: {
+    width: '48%',
+    backgroundColor: '#F9FAFB',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: SPACING.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52,
   },
+  actionBtnText: { fontSize: 13, fontWeight: '600', color: '#111827', textAlign: 'center' },
+
+  // Footer
   footer: {
     flexDirection: 'row',
     backgroundColor: '#FFFFFF',
     borderTopWidth: 2,
-    borderTopColor: COLORS.text,
+    borderTopColor: '#111827',
     paddingVertical: SPACING.md,
     paddingHorizontal: SPACING.xs,
+    position: 'absolute',
+    bottom: 0, left: 0, right: 0,
     elevation: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.08,
     shadowRadius: 3,
   },
-  footerButton: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: SPACING.sm,
-  },
-  footerButtonText: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-    fontWeight: '600',
-    fontSize: 12,
-  },
-  footerButtonActive: {
-    color: COLORS.text,
-    fontWeight: '700',
-  },
+  footerBtn:       { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: SPACING.sm },
+  footerBtnText:   { fontSize: 12, fontWeight: '600', color: '#9CA3AF' },
+  footerBtnActive: { color: '#111827', fontWeight: '700' },
 });
-
-const inferAlertType = (alert) => {
-  if (alert.disasterType) return alert.disasterType.charAt(0).toUpperCase() + alert.disasterType.slice(1);
-  if (alert.type) return alert.type.charAt(0).toUpperCase() + alert.type.slice(1);
-  if (alert.title) {
-    const lowerTitle = alert.title.toLowerCase();
-    if (lowerTitle.includes('fire'))       return 'Fire';
-    if (lowerTitle.includes('flood'))      return 'Flood';
-    if (lowerTitle.includes('storm'))      return 'Storm';
-    if (lowerTitle.includes('earthquake')) return 'Earthquake';
-    if (lowerTitle.includes('evacuation')) return 'Evacuation';
-  }
-  return 'Alert';
-};

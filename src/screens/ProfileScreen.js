@@ -1,12 +1,31 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, TextInput, Image, Alert, Dimensions } from 'react-native';
+import React, { useState } from 'react';
+import {
+  View, Text, StyleSheet, TouchableOpacity, ScrollView,
+  Modal, TextInput, Image, Alert,
+} from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { useApp } from '../context/AppContext';
 import { storageService } from '../services/storageServices';
 
 export default function ProfileScreen({ navigation }) {
+    const [helpModalVisible, setHelpModalVisible] = useState(false);
   const { user, setUser, userPoints, completedTasks } = useApp();
+
+  const [profileName, setProfileName]   = useState(user?.displayName || user?.email || 'User');
+  const [profileImage, setProfileImage] = useState(user?.photoURL || null);
+  const [editVisible, setEditVisible]   = useState(false);
+  const [nameInput, setNameInput]       = useState(profileName);
+  const [imageInput, setImageInput]     = useState(profileImage);
+
+  // Level / XP
+  const level      = Math.floor(userPoints / 100);
+  const currentXP  = userPoints % 100;
+  const xpProgress = (currentXP / 100) * 100;
+
+  // Stats
+  const tasksCompleted = completedTasks.length;
+  const totalPoints    = userPoints;
 
   const handleLogout = async () => {
     try {
@@ -19,29 +38,11 @@ export default function ProfileScreen({ navigation }) {
     }
   };
 
-  const [profileName, setProfileName] = useState(user?.displayName || user?.email || 'User');
-  const [profileImage, setProfileImage] = useState(user?.photoURL || null);
-  const [editModalVisible, setEditModalVisible] = useState(false);
-  const [nameInput, setNameInput] = useState(profileName);
-  const [imageInput, setImageInput] = useState(profileImage);
-
-  // Level and XP
-  const level = Math.floor(userPoints / 100);
-  const currentXP = userPoints % 100;
-  const maxXP = 100;
-  const xpToNextLevel = maxXP - currentXP;
-  const progressPercentage = (currentXP / maxXP) * 100;
-
-  // Stats
-  const tasksCompleted = completedTasks.length;
-  const quizzesPassed = completedTasks.filter(id => typeof id === 'string' ? id.includes('quiz') : false).length;
-
-  const openEditModal = () => {
+  const openEdit = () => {
     setNameInput(profileName);
     setImageInput(profileImage);
-    setEditModalVisible(true);
+    setEditVisible(true);
   };
-  const closeEditModal = () => setEditModalVisible(false);
 
   const handlePickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -50,437 +51,304 @@ export default function ProfileScreen({ navigation }) {
       aspect: [1, 1],
       quality: 0.5,
     });
-    if (!result.canceled && result.assets && result.assets.length > 0) {
+    if (!result.canceled && result.assets?.length > 0) {
       setImageInput(result.assets[0].uri);
     }
   };
 
-  const handleSaveProfile = async () => {
+  const handleSave = async () => {
     setProfileName(nameInput);
     setProfileImage(imageInput);
-    if (setUser && user) {
-      setUser({ ...user, displayName: nameInput, photoURL: imageInput });
-    }
+    if (setUser && user) setUser({ ...user, displayName: nameInput, photoURL: imageInput });
     await storageService.savePreferences({ name: nameInput, image: imageInput });
-    setEditModalVisible(false);
-    Alert.alert('Profile updated');
+    setEditVisible(false);
   };
 
   return (
     <View style={styles.container}>
-      <ScrollView style={styles.scrollView}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>PrepareNow</Text>
-        </View>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
 
-        <View style={styles.content}>
-          {/* Avatar Section */}
-          <View style={styles.avatarSection}>
+        {/* ── Identity banner ── */}
+        <View style={styles.banner}>
+          <Text style={styles.appLabel}>PREPARENOW</Text>
+
+          <View style={styles.identityRow}>
+            {/* Avatar */}
             {profileImage ? (
-              <Image source={{ uri: profileImage }} style={styles.avatarImg} />
+              <Image source={{ uri: profileImage }} style={styles.avatar} />
             ) : (
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>{profileName.charAt(0).toUpperCase()}</Text>
+              <View style={styles.avatarPlaceholder}>
+                <Text style={styles.avatarInitial}>{profileName.charAt(0).toUpperCase()}</Text>
               </View>
             )}
-            <Text style={styles.userName}>{profileName}</Text>
-            <TouchableOpacity onPress={openEditModal}>
-              <Text style={styles.editProfile}>Edit Profile</Text>
-            </TouchableOpacity>
-          </View>
 
-          {/* Level Progress */}
-          <View style={styles.levelSection}>
-            <View style={styles.levelHeader}>
-              <Text style={styles.levelText}>Level {level}</Text>
-              <Text style={styles.xpText}>{currentXP} / {maxXP} XP</Text>
-            </View>
-            <View style={styles.progressBarContainer}>
-              <View style={[styles.progressBarFill, { width: `${progressPercentage}%` }]} />
-            </View>
-            <Text style={styles.xpToNext}>{xpToNextLevel} XP to Level {level + 1}</Text>
-          </View>
-
-          {/* Stats Section */}
-          <View style={styles.statsSection}>
-            <Text style={styles.sectionTitle}>YOUR STATS</Text>
-            <View style={styles.statsGrid}>
-              <View style={styles.statCard}>
-                <Text style={styles.statNumber}>{tasksCompleted}</Text>
-                <Text style={styles.statLabel}>Tasks Completed</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statCard}>
-                <Text style={styles.statNumber}>{quizzesPassed}</Text>
-                <Text style={styles.statLabel}>Quizzes Passed</Text>
-              </View>
+            {/* Name + edit */}
+            <View style={styles.identityInfo}>
+              <Text style={styles.profileName}>{profileName}</Text>
+              <Text style={styles.profileEmail}>{user?.email || ''}</Text>
+              <TouchableOpacity style={styles.editBtn} onPress={openEdit}>
+                <Text style={styles.editBtnText}>Edit Profile</Text>
+              </TouchableOpacity>
             </View>
           </View>
 
-          {/* Menu Section */}
-          <View style={styles.menuSection}>
-            <Text style={styles.sectionTitle}>MENU</Text>
+          {/* Level bar */}
+          <View style={styles.levelRow}>
+            <Text style={styles.levelLabel}>LEVEL {level}</Text>
+            <Text style={styles.xpLabel}>{currentXP} / 100 XP</Text>
+          </View>
+          <View style={styles.xpBarTrack}>
+            <View style={[styles.xpBarFill, { width: `${xpProgress}%` }]} />
+          </View>
+          <Text style={styles.xpNext}>{100 - currentXP} XP to Level {level + 1}</Text>
+        </View>
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('DeveloperSettings')}>
-              <Text style={styles.menuItemText}>Developer Settings</Text>
-            </TouchableOpacity>
-            <View style={styles.divider} />
+        {/* ── Stats ── */}
+        <View style={styles.statsRow}>
+          <View style={styles.statCell}>
+            <Text style={styles.statNumber}>{tasksCompleted}</Text>
+            <Text style={styles.statLabel}>Tasks Done</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statCell}>
+            <Text style={styles.statNumber}>{totalPoints.toLocaleString()}</Text>
+            <Text style={styles.statLabel}>Total Points</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statCell}>
+            <Text style={styles.statNumber}>{level}</Text>
+            <Text style={styles.statLabel}>Level</Text>
+          </View>
+        </View>
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => {}}>
-              <Text style={styles.menuItemText}>Achievements</Text>
-            </TouchableOpacity>
-            <View style={styles.divider} />
+        {/* ── Menu ── */}
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>MENU</Text>
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => {}}>
-              <Text style={styles.menuItemText}>Help & Support</Text>
-            </TouchableOpacity>
-            <View style={styles.divider} />
-
-            {/* ✅ Logout sits inside the menu card, directly below Help & Support */}
-            <TouchableOpacity style={styles.menuItem} onPress={handleLogout}>
-              <Text style={styles.menuItemTextLogout}>Log Out</Text>
+          {[
+            { label: 'Achievements',         onPress: () => {} },
+            { label: 'Help & Support',        onPress: () => setHelpModalVisible(true) },
+            { label: 'Developer Settings',    onPress: () => navigation.navigate('DeveloperSettings') },
+          ].map((item, i, arr) => (
+            <React.Fragment key={item.label}>
+              <TouchableOpacity style={styles.menuItem} onPress={item.onPress} activeOpacity={0.6}>
+                <Text style={styles.menuItemText}>{item.label}</Text>
+                <Text style={styles.menuChevron}>›</Text>
+              </TouchableOpacity>
+              {i < arr.length - 1 && <View style={styles.divider} />}
+            </React.Fragment>
+          ))}
+      {/* Help & Support Modal */}
+      <Modal
+        visible={helpModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setHelpModalVisible(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 28, width: '80%', alignItems: 'center' }}>
+            <Text style={{ fontWeight: 'bold', fontSize: 18, marginBottom: 12 }}>Help & Support</Text>
+            <Text style={{ fontSize: 15, color: '#374151', textAlign: 'center', marginBottom: 18 }}>
+              For assistance, contact us at
+              <Text style={{ color: '#2563EB', fontWeight: '600' }}> support@preparenow.com </Text>
+              or visit our FAQ in the app settings.
+            </Text>
+            <TouchableOpacity onPress={() => setHelpModalVisible(false)} style={{ marginTop: 8, backgroundColor: '#2563EB', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 24 }}>
+              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
+      </Modal>
+
+          <View style={styles.divider} />
+          <TouchableOpacity style={styles.menuItem} onPress={handleLogout} activeOpacity={0.6}>
+            <Text style={styles.menuItemLogout}>Log Out</Text>
+          </TouchableOpacity>
+        </View>
+
       </ScrollView>
 
-      {/* Edit Profile Modal */}
-      <Modal visible={editModalVisible} animationType="slide" transparent>
+      {/* ── Footer ── */}
+      <View style={styles.footer}>
+        {['Home', 'Alerts', 'Prepare', 'Plan', 'Profile'].map(screen => (
+          <TouchableOpacity key={screen} style={styles.footerBtn} onPress={() => navigation.navigate(screen)}>
+            <Text style={[styles.footerBtnText, screen === 'Profile' && styles.footerBtnActive]}>
+              {screen}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* ── Edit Profile Modal ── */}
+      <Modal visible={editVisible} animationType="slide" transparent onRequestClose={() => setEditVisible(false)}>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+          <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Edit Profile</Text>
-            <TouchableOpacity onPress={handlePickImage} style={styles.avatarEditBtn}>
+
+            <TouchableOpacity style={styles.avatarEditArea} onPress={handlePickImage}>
               {imageInput ? (
-                <Image source={{ uri: imageInput }} style={styles.avatarImgLarge} />
+                <Image source={{ uri: imageInput }} style={styles.modalAvatar} />
               ) : (
-                <View style={styles.avatarLarge}>
-                  <Text style={styles.avatarTextLarge}>{nameInput.charAt(0).toUpperCase()}</Text>
+                <View style={styles.modalAvatarPlaceholder}>
+                  <Text style={styles.modalAvatarInitial}>{nameInput.charAt(0).toUpperCase()}</Text>
                 </View>
               )}
-              <Text style={styles.avatarEditText}>Change Photo</Text>
+              <Text style={styles.changePhotoText}>Change Photo</Text>
             </TouchableOpacity>
+
             <TextInput
               style={styles.input}
               value={nameInput}
               onChangeText={setNameInput}
-              placeholder="Enter your name"
+              placeholder="Your name"
               autoCapitalize="words"
             />
-            <View style={styles.modalBtnRow}>
-              <TouchableOpacity style={styles.modalBtn} onPress={closeEditModal}>
-                <Text style={styles.modalBtnText}>Cancel</Text>
+
+            <View style={styles.modalBtns}>
+              <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setEditVisible(false)}>
+                <Text style={styles.modalBtnCancelText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalBtn, styles.modalBtnSave]} onPress={handleSaveProfile}>
-                <Text style={[styles.modalBtnText, styles.modalBtnSaveText]}>Save</Text>
+              <TouchableOpacity style={styles.modalBtnSave} onPress={handleSave}>
+                <Text style={styles.modalBtnSaveText}>Save</Text>
               </TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
-
-      {/* Footer Navigation */}
-      <View style={styles.footer}>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Home')}>
-          <Text style={styles.footerButtonText}>Home</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Alerts')}>
-          <Text style={styles.footerButtonText}>Alerts</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Prepare')}>
-          <Text style={styles.footerButtonText}>Prepare</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Plan')}>
-          <Text style={styles.footerButtonText}>Plan</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Profile')}>
-          <Text style={[styles.footerButtonText, styles.footerButtonActive]}>Profile</Text>
-        </TouchableOpacity>
-      </View>
     </View>
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
+  container: { flex: 1, backgroundColor: '#F5F5F0' },
+
+  // ── Banner
+  banner: {
+    backgroundColor: '#111827',
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.xxl + 24,
+    paddingBottom: SPACING.lg,
   },
-  scrollView: {
-    flex: 1,
+  appLabel: { fontSize: 10, fontWeight: '700', color: '#6B7280', letterSpacing: 2, marginBottom: SPACING.md },
+
+  identityRow: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.lg },
+  avatar: { width: 64, height: 64, borderRadius: 32, marginRight: SPACING.md, borderWidth: 2, borderColor: '#374151' },
+  avatarPlaceholder: {
+    width: 64, height: 64, borderRadius: 32,
+    backgroundColor: '#1F2937', alignItems: 'center', justifyContent: 'center',
+    marginRight: SPACING.md, borderWidth: 2, borderColor: '#374151',
   },
-  header: {
-    padding: SPACING.lg,
-    paddingTop: SPACING.xxl + 20,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-  },
-  headerTitle: {
-    ...TYPOGRAPHY.h2,
-    fontWeight: '700',
-    color: COLORS.text,
-    fontSize: 20,
-  },
-  content: {
-    padding: SPACING.lg,
-  },
-  avatarSection: {
-    alignItems: 'center',
-    marginBottom: SPACING.xl,
-    backgroundColor: '#FFFFFF',
-    borderRadius: BORDER_RADIUS.md,
-    padding: SPACING.xl,
-    ...SHADOWS.card,
-  },
-  avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: COLORS.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: SPACING.md,
-  },
-  avatarText: {
-    fontSize: 36,
-    fontWeight: '700',
-    color: COLORS.textSecondary,
-  },
-  avatarImg: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    marginBottom: SPACING.md,
-  },
-  userName: {
-    ...TYPOGRAPHY.h2,
-    fontWeight: '700',
-    color: COLORS.text,
-    marginBottom: SPACING.xs,
-  },
-  editProfile: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.text,
-    textDecorationLine: 'underline',
-    fontSize: 14,
-  },
-  levelSection: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: BORDER_RADIUS.md,
-    padding: SPACING.lg,
-    marginBottom: SPACING.lg,
-    ...SHADOWS.card,
-  },
-  levelHeader: {
+  avatarInitial: { fontSize: 26, fontWeight: '800', color: '#FFFFFF' },
+
+  identityInfo:  { flex: 1 },
+  profileName:   { fontSize: 22, fontWeight: '800', color: '#FFFFFF', marginBottom: 2 },
+  profileEmail:  { fontSize: 12, color: '#6B7280', marginBottom: SPACING.sm },
+  editBtn:       { alignSelf: 'flex-start', borderWidth: 1, borderColor: '#374151', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4 },
+  editBtnText:   { fontSize: 12, fontWeight: '600', color: '#9CA3AF' },
+
+  levelRow:   { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  levelLabel: { fontSize: 11, fontWeight: '700', color: '#9CA3AF', letterSpacing: 1 },
+  xpLabel:    { fontSize: 11, color: '#6B7280' },
+  xpBarTrack: { height: 4, backgroundColor: '#1F2937', borderRadius: 2, overflow: 'hidden', marginBottom: 6 },
+  xpBarFill:  { height: '100%', backgroundColor: '#FFFFFF', borderRadius: 2 },
+  xpNext:     { fontSize: 11, color: '#4B5563' },
+
+  // ── Stats row
+  statsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: SPACING.sm,
-  },
-  levelText: {
-    ...TYPOGRAPHY.h3,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  xpText: {
-    ...TYPOGRAPHY.body,
-    fontWeight: '600',
-    color: COLORS.textSecondary,
-  },
-  progressBarContainer: {
-    height: 12,
-    backgroundColor: COLORS.surface,
-    borderRadius: 6,
-    overflow: 'hidden',
-    marginBottom: SPACING.sm,
-  },
-  progressBarFill: {
-    height: '100%',
-    backgroundColor: COLORS.text,
-    borderRadius: 6,
-  },
-  xpToNext: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-    fontSize: 12,
-  },
-  statsSection: {
     backgroundColor: '#FFFFFF',
-    borderRadius: BORDER_RADIUS.md,
-    padding: SPACING.lg,
-    marginBottom: SPACING.lg,
-    ...SHADOWS.card,
-  },
-  sectionTitle: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-    fontWeight: '700',
-    letterSpacing: 1,
-    marginBottom: SPACING.md,
-    fontSize: 11,
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  statCard: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  statDivider: {
-    width: 1,
-    height: 40,
-    backgroundColor: COLORS.border,
     marginHorizontal: SPACING.md,
+    marginTop: SPACING.md,
+    borderRadius: 14,
+    paddingVertical: SPACING.lg,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 1,
   },
-  statNumber: {
-    ...TYPOGRAPHY.h1,
-    fontWeight: '700',
-    color: COLORS.text,
-    fontSize: 36,
-    marginBottom: SPACING.xs,
-  },
-  statLabel: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-    textAlign: 'center',
-    fontSize: 12,
-  },
-  menuSection: {
+  statCell:    { flex: 1, alignItems: 'center' },
+  statDivider: { width: 1, backgroundColor: '#E5E7EB' },
+  statNumber:  { fontSize: 30, fontWeight: '800', color: '#111827', marginBottom: 2 },
+  statLabel:   { fontSize: 11, color: '#9CA3AF', fontWeight: '600', letterSpacing: 0.5 },
+
+  // ── Card
+  card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: BORDER_RADIUS.md,
-    padding: SPACING.lg,
-    ...SHADOWS.card,
+    marginHorizontal: SPACING.md,
+    marginTop: SPACING.md,
+    borderRadius: 14,
+    padding: SPACING.md,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 1,
   },
-  menuItem: {
-    paddingVertical: SPACING.md,
-  },
-  menuItemText: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.text,
-    fontWeight: '600',
-    fontSize: 16,
-  },
-  menuItemTextLogout: {
-    ...TYPOGRAPHY.body,
-    color: '#DC2626',
-    fontWeight: '600',
-    fontSize: 16,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: COLORS.border,
-  },
+  sectionLabel: { fontSize: 11, fontWeight: '700', color: '#9CA3AF', letterSpacing: 1.5, marginBottom: SPACING.sm },
+
+  menuItem:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14 },
+  menuItemText:  { fontSize: 15, fontWeight: '600', color: '#111827' },
+  menuItemLogout:{ fontSize: 15, fontWeight: '600', color: '#DC2626' },
+  menuChevron:   { fontSize: 18, color: '#D1D5DB' },
+  divider:       { height: 1, backgroundColor: '#F3F4F6' },
+
+  // ── Footer
   footer: {
     flexDirection: 'row',
     backgroundColor: '#FFFFFF',
     borderTopWidth: 2,
-    borderTopColor: COLORS.text,
+    borderTopColor: '#111827',
     paddingVertical: SPACING.md,
     paddingHorizontal: SPACING.xs,
+    position: 'absolute',
+    bottom: 0, left: 0, right: 0,
     elevation: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.08,
     shadowRadius: 3,
   },
-  footerButton: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: SPACING.sm,
-  },
-  footerButtonText: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-    fontWeight: '600',
-    fontSize: 12,
-  },
-  footerButtonActive: {
-    color: COLORS.text,
-    fontWeight: '700',
-  },
-  avatarImgLarge: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    marginBottom: 8,
-    alignSelf: 'center',
-  },
-  avatarLarge: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: COLORS.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-    alignSelf: 'center',
-  },
-  avatarTextLarge: {
-    fontSize: 48,
-    fontWeight: '700',
-    color: COLORS.textSecondary,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalContent: {
-    backgroundColor: '#fff',
+  footerBtn:       { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: SPACING.sm },
+  footerBtnText:   { fontSize: 12, fontWeight: '600', color: '#9CA3AF' },
+  footerBtnActive: { color: '#111827', fontWeight: '700' },
+
+  // ── Modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  modalBox: {
+    backgroundColor: '#FFFFFF',
     borderRadius: 16,
-    padding: 24,
-    width: '85%',
-    alignItems: 'stretch',
-    elevation: 8,
+    padding: SPACING.lg,
+    width: '88%',
+    maxWidth: 400,
   },
-  modalTitle: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  avatarEditBtn: {
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  avatarEditText: {
-    color: COLORS.textSecondary,
-    fontSize: 14,
-    marginTop: 4,
-  },
+  modalTitle:   { fontSize: 18, fontWeight: '700', color: '#111827', textAlign: 'center', marginBottom: SPACING.lg },
+
+  avatarEditArea:         { alignItems: 'center', marginBottom: SPACING.lg },
+  modalAvatar:            { width: 88, height: 88, borderRadius: 44, marginBottom: 8 },
+  modalAvatarPlaceholder: { width: 88, height: 88, borderRadius: 44, backgroundColor: '#1F2937', alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
+  modalAvatarInitial:     { fontSize: 36, fontWeight: '800', color: '#FFFFFF' },
+  changePhotoText:        { fontSize: 13, color: '#6B7280', fontWeight: '600' },
+
   input: {
+    backgroundColor: '#F9FAFB',
     borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
-    marginBottom: 20,
-    backgroundColor: '#fafbfc',
+    borderColor: '#E5E7EB',
+    borderRadius: 10,
+    padding: SPACING.md,
+    fontSize: 15,
+    marginBottom: SPACING.md,
+    color: '#111827',
   },
-  modalBtnRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 12,
-  },
-  modalBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 18,
-    borderRadius: 8,
-    backgroundColor: COLORS.surface,
-    marginLeft: 8,
-  },
-  modalBtnText: {
-    fontSize: 16,
-    color: COLORS.text,
-  },
-  modalBtnSave: {
-    backgroundColor: COLORS.text,
-  },
-  modalBtnSaveText: {
-    color: '#fff',
-    fontWeight: 'bold',
-  },
+  modalBtns:          { flexDirection: 'row', gap: SPACING.sm },
+  modalBtnCancel:     { flex: 1, padding: 12, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB' },
+  modalBtnCancelText: { fontSize: 15, fontWeight: '600', color: '#374151' },
+  modalBtnSave:       { flex: 1, padding: 12, borderRadius: 10, alignItems: 'center', backgroundColor: '#111827' },
+  modalBtnSaveText:   { fontSize: 15, fontWeight: '700', color: '#FFFFFF' },
 });

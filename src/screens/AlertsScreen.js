@@ -1,64 +1,157 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, RefreshControl, TouchableOpacity, Modal, Pressable } from 'react-native';
-import { DISASTER_CONFIG } from '../constants/disasters';
-import { locationService } from '../services/locationService';
-import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import React, { useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  TouchableOpacity,
+  Modal,
+  Pressable,
+} from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { locationService } from '../services/locationService';
+import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../constants/theme';
 import { SAFETY_GUIDES } from '../constants/resources';
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const SEVERITY_CONFIG = {
+  critical: { color: '#DC2626', label: 'CRITICAL' },
+  high:     { color: '#EA580C', label: 'HIGH'     },
+  warning:  { color: '#D97706', label: 'WARNING'  },
+  info:     { color: '#2563EB', label: 'INFO'     },
+};
+
+const DISASTER_KEYWORDS = {
+  fire:       ['fire', 'wildfire', 'blaze'],
+  flood:      ['flood', 'flooding', 'flash flood'],
+  storm:      ['storm', 'hurricane', 'tornado', 'cyclone'],
+  earthquake: ['earthquake', 'seismic', 'eq', 'tremor'],
+  evacuation: ['evacuation', 'evacuate'],
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const resolveDisasterType = (item) => {
+  if (item.disasterType) return item.disasterType.toLowerCase();
+  const search = `${item.type || ''} ${item.title || ''}`.toLowerCase();
+  for (const [type, keywords] of Object.entries(DISASTER_KEYWORDS)) {
+    if (keywords.some(k => search.includes(k))) return type;
+  }
+  return null;
+};
+
+const getTimeAgo = (timestamp) => {
+  const diffMins = Math.floor((Date.now() - new Date(timestamp).getTime()) / 60000);
+  if (diffMins < 1)  return 'Just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHrs = Math.floor(diffMins / 60);
+  if (diffHrs < 24)  return `${diffHrs}h ago`;
+  return `${Math.floor(diffHrs / 24)}d ago`;
+};
+
+const getSafetySteps = (type) => {
+  if (!type) return [];
+  const guide = SAFETY_GUIDES?.find(g => g.type === type);
+  return guide ? guide.sections.flatMap(s => s.steps) : [];
+};
+
+const FALLBACK_STEPS = [
+  'Follow official guidance from local authorities.',
+  'Stay calm and keep others informed.',
+  'Contact emergency services (999) if in immediate danger.',
+];
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+const CriticalCard = ({ alert, onViewSteps }) => {
+  const cfg = SEVERITY_CONFIG[alert.severity] || SEVERITY_CONFIG.high;
+  return (
+    <View style={[styles.criticalCard, { borderColor: cfg.color }]}>
+      <View style={[styles.criticalStripe, { backgroundColor: cfg.color }]}>
+        <Text style={styles.criticalStripeText}>ACTIVE ZONE ALERT · {cfg.label}</Text>
+        <Text style={styles.criticalStripeTime}>{alert.time}</Text>
+      </View>
+      <View style={styles.criticalBody}>
+        <Text style={styles.criticalTitle} numberOfLines={2}>{alert.title}</Text>
+        {!!alert.description && (
+          <Text style={styles.criticalDesc}>{alert.description}</Text>
+        )}
+        <TouchableOpacity
+          style={[styles.stepsBtn, { backgroundColor: cfg.color }]}
+          onPress={() => onViewSteps(alert)}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.stepsBtnText}>View Safety Steps</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
+const RecentRow = ({ alert }) => (
+  <View style={[styles.recentRow, alert.isExit && styles.recentRowExit]}>
+    <View style={[styles.recentDot, alert.isExit && styles.recentDotExit]} />
+    <Text style={[styles.recentTitle, alert.isExit && styles.recentTitleExit]} numberOfLines={1}>
+      {alert.title}
+    </Text>
+    <Text style={styles.recentTime}>{alert.time}</Text>
+  </View>
+);
+
+const SafetyModal = ({ visible, title, steps, onClose }) => (
+  <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+    <View style={styles.modalOverlay}>
+      <View style={styles.modalSheet}>
+        <View style={styles.modalHandle} />
+        <Text style={styles.modalTitle}>{title}</Text>
+        <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+          {steps.map((step, i) => (
+            <View key={i} style={styles.stepRow}>
+              <View style={styles.stepNum}>
+                <Text style={styles.stepNumText}>{i + 1}</Text>
+              </View>
+              <Text style={styles.stepText}>{step}</Text>
+            </View>
+          ))}
+        </ScrollView>
+        <Pressable style={styles.modalCloseBtn} onPress={onClose}>
+          <Text style={styles.modalCloseBtnText}>Close</Text>
+        </Pressable>
+      </View>
+    </View>
+  </Modal>
+);
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
+
 export default function AlertsScreen({ navigation }) {
-  const [events, setEvents] = useState([]);
+  const [events,         setEvents]         = useState([]);
   const [criticalAlerts, setCriticalAlerts] = useState([]);
-  const [allAlerts, setAllAlerts] = useState([]);
-  const [activeZones, setActiveZones] = useState([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [safetyModalVisible, setSafetyModalVisible] = useState(false);
-  const [safetySteps, setSafetySteps] = useState([]);
-  const [safetyTitle, setSafetyTitle] = useState('');
-  const [detailsModalVisible, setDetailsModalVisible] = useState(false);
-  const [detailsContent, setDetailsContent] = useState({ title: '', description: '', steps: [] });
-  const [showAllRecentAlerts, setShowAllRecentAlerts] = useState(false);
+  const [activeZones,    setActiveZones]    = useState([]);
+  const [refreshing,     setRefreshing]     = useState(false);
+  const [safetyModal,    setSafetyModal]    = useState({ visible: false, title: '', steps: [] });
+  const [showAllRecent,  setShowAllRecent]  = useState(false);
+
+  const loadData = useCallback(async () => {
+    const [zonesRes, eventsRes, criticalRes] = await Promise.all([
+      locationService.getActiveZones(),
+      locationService.getEventHistory(),
+      locationService.getCriticalAlerts(),
+    ]);
+    if (zonesRes.success)    setActiveZones(zonesRes.zones);
+    if (eventsRes.success)   setEvents(eventsRes.events);
+    if (criticalRes.success) setCriticalAlerts(criticalRes.alerts);
+  }, []);
 
   useFocusEffect(
-    React.useCallback(() => {
+    useCallback(() => {
       loadData();
-      const refreshInterval = setInterval(() => {
-        loadData();
-      }, 10000);
-      return () => clearInterval(refreshInterval);
-    }, [])
+      const interval = setInterval(loadData, 10000);
+      return () => clearInterval(interval);
+    }, [loadData])
   );
-
-  const loadData = async () => {
-    await loadActiveZones();
-    await loadEvents();
-    await loadLiveAlerts();
-  };
-
-  const loadActiveZones = async () => {
-    const result = await locationService.getActiveZones();
-    if (result.success) {
-      setActiveZones(result.zones);
-    }
-  };
-
-  const loadEvents = async () => {
-    const result = await locationService.getEventHistory();
-    if (result.success) {
-      setEvents(result.events);
-    }
-  };
-
-  const loadLiveAlerts = async () => {
-    const allAlertsResult = await locationService.getLiveAlerts();
-    if (allAlertsResult.success) {
-      setAllAlerts(allAlertsResult.alerts);
-    }
-    const criticalResult = await locationService.getCriticalAlerts();
-    if (criticalResult.success) {
-      setCriticalAlerts(criticalResult.alerts);
-    }
-  };
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -66,515 +159,265 @@ export default function AlertsScreen({ navigation }) {
     setRefreshing(false);
   };
 
-  const getSeverityColor = (severity) => {
-    const colors = {
-      critical: COLORS.critical,
-      high: COLORS.high,
-      warning: COLORS.warning,
-      info: COLORS.info,
-    };
-    return colors[severity] || COLORS.textSecondary;
-  };
+  // ── Computed lists ────────────────────────────────────────────────────────
 
-  const getTimeAgo = (timestamp) => {
-    const now = new Date();
-    const past = new Date(timestamp);
-    const diffMs = now - past;
-    const diffMins = Math.floor(diffMs / 60000);
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins} min ago`;
-    const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
-  };
+  const activeZoneIds = new Set(activeZones.map(z => z.id));
 
-  const getSafetyStepsForType = (type) => {
-    const guide = SAFETY_GUIDES.find(g => g.type === type);
-    if (!guide) return [];
-    return guide.sections.flatMap(section => section.steps);
-  };
-
-  const resolveDisasterType = (item) => {
-    if (item.disasterType) return item.disasterType.toLowerCase();
-    const searchStr = `${item.type || ''} ${item.title || ''}`.toLowerCase();
-    if (searchStr.includes('fire'))                         return 'fire';
-    if (searchStr.includes('flood'))                        return 'flood';
-    if (searchStr.includes('storm'))                        return 'storm';
-    if (searchStr.includes('earthquake') || searchStr.includes('eq')) return 'earthquake';
-    if (searchStr.includes('evacuation'))                   return 'evacuation';
-    return null;
-  };
-
-  const handleViewSafetySteps = (alert) => {
-    const safetyType = resolveDisasterType(alert);
-    const steps = safetyType ? getSafetyStepsForType(safetyType) : [];
-    const title = safetyType
-      ? `${safetyType.charAt(0).toUpperCase() + safetyType.slice(1)} Safety Steps`
-      : 'Safety Steps';
-    setSafetyTitle(title);
-    setSafetySteps(
-      steps.length > 0
-        ? steps
-        : [
-            'Follow official guidance from local authorities.',
-            'Stay calm and keep others informed.',
-            'Contact emergency services if in immediate danger.',
-          ]
-    );
-    setSafetyModalVisible(true);
-  };
-
-  // Critical Alerts — only zones user is currently inside, deduplicated by title
-  const displayCriticalAlerts = (() => {
-    const activeZoneIds = new Set(activeZones.map(z => z.id));
-
-    const fromEvents = events
-      .filter(event =>
-        event.type === 'enter' &&
-        (event.severity === 'critical' || event.severity === 'high') &&
-        activeZoneIds.has(event.zone)
-      )
-      .map(event => ({
-        id: `event-${event.timestamp}`,
-        severity: event.severity,
-        title: event.title || 'Alert',
-        description: event.description || 'Disaster zone alert',
-        time: getTimeAgo(event.timestamp),
-        timestamp: event.timestamp,
-        disasterType: event.disasterType,
-      }));
-
-    const fromFirestore = criticalAlerts
-      .filter(alert => activeZoneIds.has(alert.zoneId))
-      .map(alert => ({
-        id: alert.id,
-        severity: alert.severity,
-        title: alert.title,
-        description: alert.description,
-        time: getTimeAgo(alert.timestamp),
-        timestamp: alert.timestamp,
-        disasterType: alert.disasterType,
-      }));
-
-    const merged = [...fromEvents, ...fromFirestore]
-      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-    // Deduplicate by title — one card per real-world zone
+  const displayCritical = (() => {
     const seenTitles = new Set();
-    return merged.filter(alert => {
-      if (seenTitles.has(alert.title)) return false;
-      seenTitles.add(alert.title);
-      return true;
-    });
+    const fromEvents = events
+      .filter(e => e.type === 'enter' && ['critical', 'high'].includes(e.severity) && activeZoneIds.has(e.zone))
+      .map(e => ({ id: `event-${e.timestamp}`, severity: e.severity, title: e.title || 'Alert', description: e.description || '', time: getTimeAgo(e.timestamp), timestamp: e.timestamp, disasterType: e.disasterType }));
+    const fromFirestore = criticalAlerts
+      .filter(a => activeZoneIds.has(a.zoneId))
+      .map(a => ({ id: a.id, severity: a.severity, title: a.title, description: a.description || '', time: getTimeAgo(a.timestamp), timestamp: a.timestamp, disasterType: a.disasterType }));
+    return [...fromEvents, ...fromFirestore]
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .filter(a => { if (seenTitles.has(a.title)) return false; seenTitles.add(a.title); return true; });
   })();
 
-  // Recent Alerts — entry AND exit events within 5 minutes.
-  // Deduplicated by zone+eventType key so the same zone can only appear
-  // once per event type (one "Entered X", one "Left X").
-  const displayRecentAlerts = (() => {
-    const activeZoneIds = new Set(activeZones.map(z => z.id));
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-
-    const filtered = events
-      .filter(event => {
-        if (new Date(event.timestamp) < fiveMinutesAgo) return false;
-        if (event.type === 'enter') return activeZoneIds.has(event.zone);
-        if (event.type === 'exit')  return true; // always show exits
-        return false;
-      })
-      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-    // One row per unique zone+eventType — collapses any remaining duplicates
+  const displayRecent = (() => {
+    const fiveMinAgo = Date.now() - 5 * 60 * 1000;
     const seenKeys = new Set();
-    return filtered
-      .filter(event => {
-        const key = `${event.type}-${event.zone}`;
-        if (seenKeys.has(key)) return false;
-        seenKeys.add(key);
-        return true;
+    return events
+      .filter(e => {
+        if (new Date(e.timestamp).getTime() < fiveMinAgo) return false;
+        return e.type === 'enter' ? activeZoneIds.has(e.zone) : e.type === 'exit';
       })
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .filter(e => { const k = `${e.type}-${e.zone}`; if (seenKeys.has(k)) return false; seenKeys.add(k); return true; })
       .slice(0, 5)
-      .map(event => ({
-        id: `event-${event.timestamp}`,
-        severity: event.severity || 'info',
-        title: event.type === 'exit' ? `Left ${event.title}` : `Entered ${event.title}`,
-        time: getTimeAgo(event.timestamp),
-        timestamp: event.timestamp,
-        isExit: event.type === 'exit',
-      }));
+      .map(e => ({ id: `event-${e.timestamp}`, title: e.type === 'exit' ? `Left ${e.title}` : `Entered ${e.title}`, time: getTimeAgo(e.timestamp), isExit: e.type === 'exit' }));
   })();
+
+  const openSafetyModal = (alert) => {
+    const type  = resolveDisasterType(alert);
+    const steps = type ? getSafetySteps(type) : [];
+    setSafetyModal({
+      visible: true,
+      title: type ? `${type.charAt(0).toUpperCase() + type.slice(1)} Safety Steps` : 'Safety Steps',
+      steps: steps.length > 0 ? steps : FALLBACK_STEPS,
+    });
+  };
+
+  const visibleRecent = showAllRecent ? displayRecent : displayRecent.slice(0, 3);
 
   return (
     <View style={styles.container}>
-      {/* Header */}
+      {/* ── Header ── */}
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => navigation.navigate('Home')}
-        >
-          <Text style={styles.backButtonText}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>PrepareNow</Text>
-        <Text style={styles.title}>Alerts & Notifications</Text>
+        <Text style={styles.appLabel}>PREPARENOW</Text>
+        <Text style={styles.pageTitle}>Alerts</Text>
       </View>
 
       <ScrollView
-        style={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        contentContainerStyle={styles.scroll}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#FFFFFF" />}
+        showsVerticalScrollIndicator={false}
       >
-        {/* Critical Alerts Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>CRITICAL ALERTS</Text>
-
-          {displayCriticalAlerts.length > 0 ? (
-            displayCriticalAlerts.slice(0, 3).map((alert, index) => (
-              <View
-                key={alert.id || `critical-${index}`}
-                style={[styles.alertCard, styles.criticalCard]}
-              >
-                <View style={styles.alertHeader}>
-                  <View style={[styles.severityBadge, { backgroundColor: getSeverityColor(alert.severity) }]}>
-                    <Text style={styles.severityText}>{alert.severity.toUpperCase()}</Text>
-                  </View>
-                  <Text style={styles.alertTime}>{alert.time}</Text>
-                </View>
-                <Text style={styles.alertTitle}>{alert.title}</Text>
-                <Text style={styles.alertDescription}>{alert.description}</Text>
-                <TouchableOpacity
-                  onPress={() => handleViewSafetySteps(alert)}
-                  style={styles.safetyButton}
-                >
-                  <Text style={styles.safetyButtonText}>View Safety Steps</Text>
-                </TouchableOpacity>
+        {/* ── Critical Alerts ── */}
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <Text style={styles.sectionLabel}>CRITICAL ALERTS</Text>
+            {displayCritical.length > 0 && (
+              <View style={styles.countBadge}>
+                <Text style={styles.countBadgeText}>{displayCritical.length}</Text>
               </View>
+            )}
+          </View>
+
+          {displayCritical.length > 0 ? (
+            displayCritical.slice(0, 3).map((alert, i) => (
+              <CriticalCard key={alert.id || i} alert={alert} onViewSteps={openSafetyModal} />
             ))
           ) : (
-            <Text style={styles.noAlertsText}>No critical alerts at this time</Text>
+            <Text style={styles.emptyHint}>No active zone alerts</Text>
           )}
-          {displayCriticalAlerts.length > 3 && (
-            <Text style={styles.moreAlertsText}>+{displayCriticalAlerts.length - 3} more alerts</Text>
+
+          {displayCritical.length > 3 && (
+            <Text style={styles.moreText}>+{displayCritical.length - 3} more active alerts</Text>
           )}
         </View>
 
-        {/* Recent Alerts Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>RECENT ALERTS</Text>
+        {/* ── Recent Activity ── */}
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <Text style={styles.sectionLabel}>RECENT ACTIVITY</Text>
+          </View>
 
-          {displayRecentAlerts.length > 0 ? (
+          {displayRecent.length > 0 ? (
             <>
-              {(showAllRecentAlerts ? displayRecentAlerts : displayRecentAlerts.slice(0, 3)).map((alert, index) => (
-                <View
-                  key={alert.id || `info-${index}`}
-                  style={[
-                    styles.recentAlertCard,
-                    alert.isExit && styles.recentAlertCardExit,
-                  ]}
-                >
-                  <View style={styles.recentAlertLeft}>
-                    <Text style={styles.recentAlertIndicator}>
-                      {alert.isExit ? '↗' : '↙'}
-                    </Text>
-                    <Text style={[
-                      styles.recentAlertTitle,
-                      alert.isExit && styles.recentAlertTitleExit,
-                    ]}>
-                      {alert.title}
-                    </Text>
-                  </View>
-                  <Text style={styles.recentAlertTime}>{alert.time}</Text>
-                </View>
+              {visibleRecent.map((alert, i) => (
+                <RecentRow key={alert.id || i} alert={alert} />
               ))}
-              {displayRecentAlerts.length > 3 && (
-                <TouchableOpacity
-                  style={{ alignSelf: 'center', marginTop: 8, padding: 8 }}
-                  onPress={() => setShowAllRecentAlerts(!showAllRecentAlerts)}
-                >
-                  <Text style={{ color: '#007AFF', fontWeight: '600' }}>
-                    {showAllRecentAlerts ? 'Show Less' : 'View All Recent Alerts'}
+              {displayRecent.length > 3 && (
+                <TouchableOpacity style={styles.showMoreBtn} onPress={() => setShowAllRecent(v => !v)}>
+                  <Text style={styles.showMoreText}>
+                    {showAllRecent ? 'Show less' : `Show all ${displayRecent.length} events`}
                   </Text>
                 </TouchableOpacity>
               )}
             </>
           ) : (
-            <Text style={styles.noAlertsText}>No recent alerts in the last 5 minutes</Text>
+            <Text style={styles.emptyHint}>No zone activity</Text>
           )}
         </View>
 
-        <View style={styles.bottomPadding} />
+        {/* ── Info banner ── */}
+        <View style={styles.infoBanner}>
+          <Text style={styles.infoBannerText}>
+            Alerts update frequently based on your location
+          </Text>
+        </View>
+
+        <View style={{ height: 100 }} />
       </ScrollView>
 
-      {/* Safety Steps Modal */}
-      <Modal
-        visible={safetyModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setSafetyModalVisible(false)}
-      >
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' }}>
-          <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 24, width: '85%', maxWidth: 400 }}>
-            <Text style={{ fontWeight: '700', fontSize: 20, marginBottom: 12 }}>{safetyTitle}</Text>
-            <ScrollView style={{ maxHeight: 320 }}>
-              {safetySteps.map((step, idx) => (
-                <Text key={idx} style={{ marginBottom: 8, fontSize: 16 }}>• {step}</Text>
-              ))}
-            </ScrollView>
-            <Pressable
-              style={{ marginTop: 18, alignSelf: 'flex-end', padding: 10 }}
-              onPress={() => setSafetyModalVisible(false)}
-            >
-              <Text style={{ color: '#007AFF', fontWeight: '600', fontSize: 16 }}>Close</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
+      <SafetyModal
+        visible={safetyModal.visible}
+        title={safetyModal.title}
+        steps={safetyModal.steps}
+        onClose={() => setSafetyModal(p => ({ ...p, visible: false }))}
+      />
 
-      {/* Warning Details Modal */}
-      <Modal
-        visible={detailsModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setDetailsModalVisible(false)}
-      >
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' }}>
-          <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 24, width: '85%', maxWidth: 400 }}>
-            <Text style={{ fontWeight: '700', fontSize: 20, marginBottom: 12 }}>{detailsContent.title}</Text>
-            <Text style={{ marginBottom: 12, fontSize: 16 }}>{detailsContent.description}</Text>
-            {detailsContent.steps && detailsContent.steps.length > 0 && (
-              <View style={{ marginBottom: 8 }}>
-                <Text style={{ fontWeight: '600', marginBottom: 6 }}>Safety Steps:</Text>
-                {detailsContent.steps.map((step, idx) => (
-                  <Text key={idx} style={{ marginBottom: 6, fontSize: 15 }}>• {step}</Text>
-                ))}
-              </View>
-            )}
-            <Pressable
-              style={{ marginTop: 18, alignSelf: 'flex-end', padding: 10 }}
-              onPress={() => setDetailsModalVisible(false)}
-            >
-              <Text style={{ color: '#007AFF', fontWeight: '600', fontSize: 16 }}>Close</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Footer Navigation */}
+      {/* ── Footer ── */}
       <View style={styles.footer}>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Home')}>
-          <Text style={styles.footerButtonText}>Home</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Alerts')}>
-          <Text style={[styles.footerButtonText, styles.footerButtonActive]}>Alerts</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Prepare')}>
-          <Text style={styles.footerButtonText}>Prepare</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Plan')}>
-          <Text style={styles.footerButtonText}>Plan</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Profile')}>
-          <Text style={styles.footerButtonText}>Profile</Text>
-        </TouchableOpacity>
+        {['Home', 'Alerts', 'Prepare', 'Plan', 'Profile'].map(screen => (
+          <TouchableOpacity key={screen} style={styles.footerBtn} onPress={() => navigation.navigate(screen)}>
+            <Text style={[styles.footerBtnText, screen === 'Alerts' && styles.footerBtnActive]}>{screen}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
     </View>
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
+  container: { flex: 1, backgroundColor: '#F5F5F0' },
+  scroll:    { paddingBottom: 20 },
+
+  // Header
   header: {
-    padding: SPACING.lg,
-    paddingTop: SPACING.xxl + 20,
-    backgroundColor: COLORS.background,
+    backgroundColor: '#111827',
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.xxl + 24,
+    paddingBottom: SPACING.lg,
   },
-  backButton: {
-    marginBottom: SPACING.sm,
-    alignSelf: 'flex-start',
-  },
-  backButtonText: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.text,
-    fontWeight: '600',
-    fontSize: 16,
-  },
-  headerTitle: {
-    ...TYPOGRAPHY.body,
-    fontWeight: '600',
-    color: COLORS.text,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  title: {
-    ...TYPOGRAPHY.h2,
-    color: COLORS.text,
-    marginTop: SPACING.xs,
-  },
-  content: {
-    flex: 1,
-  },
-  section: {
-    padding: SPACING.md,
-  },
-  sectionTitle: {
-    ...TYPOGRAPHY.caption,
-    fontWeight: '700',
-    color: COLORS.text,
-    letterSpacing: 1,
-    marginBottom: SPACING.md,
-  },
-  alertCard: {
+  appLabel:  { fontSize: 10, fontWeight: '700', color: '#6B7280', letterSpacing: 2, marginBottom: 6 },
+  pageTitle: { fontSize: 28, fontWeight: '800', color: '#FFFFFF' },
+
+  // Card
+  card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: BORDER_RADIUS.lg,
-    borderWidth: 2,
-    borderColor: COLORS.text,
+    marginHorizontal: SPACING.md,
+    marginTop: SPACING.md,
+    borderRadius: 14,
     padding: SPACING.md,
-    marginBottom: SPACING.md,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 1,
   },
+  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md, gap: SPACING.sm },
+  sectionLabel:  { fontSize: 11, fontWeight: '700', color: '#6B7280', letterSpacing: 1.5, flex: 1 },
+  sectionSub:    { fontSize: 11, color: '#9CA3AF' },
+  emptyHint:     { fontSize: 13, color: '#9CA3AF', paddingVertical: SPACING.sm },
+
+  // Count badge
+  countBadge: { backgroundColor: '#DC2626', borderRadius: 10, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
+  countBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+
+  // Critical cards
   criticalCard: {
-    borderColor: COLORS.critical,
-    backgroundColor: '#FEF2F2',
-  },
-  alertHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1.5,
     marginBottom: SPACING.sm,
+    overflow: 'hidden',
+    backgroundColor: '#fff',
   },
-  severityBadge: {
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: SPACING.xs,
-    borderRadius: BORDER_RADIUS.sm,
-  },
-  severityText: {
-    ...TYPOGRAPHY.small,
-    color: '#FFFFFF',
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  alertTime: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-  },
-  alertTitle: {
-    ...TYPOGRAPHY.h3,
-    color: COLORS.text,
-    marginBottom: SPACING.xs,
-  },
-  alertDescription: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.textSecondary,
-    marginBottom: SPACING.md,
-  },
-  safetyButton: {
-    backgroundColor: COLORS.text,
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    alignItems: 'center',
-  },
-  safetyButtonText: {
-    ...TYPOGRAPHY.body,
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  detailsButton: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 2,
-    borderColor: COLORS.text,
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    alignItems: 'center',
-  },
-  detailsButtonText: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.text,
-    fontWeight: '600',
-  },
-  recentAlertCard: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderWidth: 2,
-    borderColor: COLORS.border,
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    marginBottom: SPACING.sm,
-  },
-  recentAlertCardExit: {
-    backgroundColor: '#F0FFF4',
-    borderColor: '#10B981',
-  },
-  recentAlertLeft: {
+  criticalStripe:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: 7 },
+  criticalStripeText: { color: '#fff', fontWeight: '700', fontSize: 10, letterSpacing: 0.5 },
+  criticalStripeTime: { color: 'rgba(255,255,255,0.75)', fontSize: 11 },
+  criticalBody:       { padding: SPACING.md },
+  criticalTitle:      { fontSize: 15, fontWeight: '700', color: '#111827', marginBottom: 4 },
+  criticalDesc:       { fontSize: 13, color: '#6B7280', marginBottom: SPACING.md, lineHeight: 18 },
+  stepsBtn:           { paddingVertical: 10, paddingHorizontal: SPACING.md, borderRadius: 8, alignItems: 'center' },
+  stepsBtnText:       { color: '#fff', fontWeight: '700', fontSize: 13 },
+  moreText:           { fontSize: 12, color: '#EA580C', fontWeight: '600', paddingVertical: 4 },
+
+  // Recent rows
+  recentRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flex: 1,
-    marginRight: SPACING.sm,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+    gap: SPACING.sm,
   },
-  recentAlertIndicator: {
-    fontSize: 16,
-    marginRight: 8,
-    color: COLORS.textSecondary,
+  recentRowExit:   {},
+  recentDot:       { width: 8, height: 8, borderRadius: 4, backgroundColor: '#DC2626', flexShrink: 0 },
+  recentDotExit:   { backgroundColor: '#10B981' },
+  recentTitle:     { fontSize: 13, fontWeight: '600', color: '#111827', flex: 1 },
+  recentTitleExit: { color: '#059669' },
+  recentTime:      { fontSize: 11, color: '#9CA3AF' },
+
+  showMoreBtn:  { paddingVertical: SPACING.sm, alignItems: 'center' },
+  showMoreText: { color: '#2563EB', fontWeight: '600', fontSize: 13 },
+
+  // Info banner
+  infoBanner: {
+    marginHorizontal: SPACING.md,
+    marginTop: SPACING.sm,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: SPACING.md,
   },
-  recentAlertTitle: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.text,
-    fontWeight: '600',
-    flexShrink: 1,
+  infoBannerText: { fontSize: 12, color: '#9CA3AF', textAlign: 'center' },
+
+  // Safety modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: SPACING.lg,
+    paddingBottom: SPACING.xxl,
+    maxHeight: '75%',
   },
-  recentAlertTitleExit: {
-    color: '#059669',
-  },
-  recentAlertTime: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-  },
-  bottomPadding: {
-    height: SPACING.md,
-  },
+  modalHandle: { width: 40, height: 4, backgroundColor: '#E5E7EB', borderRadius: 2, alignSelf: 'center', marginBottom: SPACING.md },
+  modalTitle:  { fontSize: 18, fontWeight: '700', color: '#111827', marginBottom: SPACING.md },
+  modalScroll: { marginBottom: SPACING.md },
+  stepRow:     { flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.md, gap: SPACING.sm },
+  stepNum:     { width: 24, height: 24, borderRadius: 12, backgroundColor: '#111827', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 },
+  stepNumText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  stepText:    { fontSize: 14, color: '#111827', flex: 1, lineHeight: 20 },
+  modalCloseBtn:     { backgroundColor: '#111827', padding: SPACING.md, borderRadius: 10, alignItems: 'center' },
+  modalCloseBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+
+  // Footer
   footer: {
     flexDirection: 'row',
     backgroundColor: '#FFFFFF',
     borderTopWidth: 2,
-    borderTopColor: COLORS.text,
+    borderTopColor: '#111827',
     paddingVertical: SPACING.md,
     paddingHorizontal: SPACING.xs,
+    position: 'absolute',
+    bottom: 0, left: 0, right: 0,
     elevation: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.08,
     shadowRadius: 3,
   },
-  footerButton: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: SPACING.sm,
-  },
-  footerButtonText: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.textSecondary,
-    fontWeight: '600',
-    fontSize: 12,
-  },
-  footerButtonActive: {
-    color: COLORS.text,
-    fontWeight: '700',
-  },
-  noAlertsText: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.textSecondary,
-    fontStyle: 'italic',
-    padding: SPACING.md,
-    textAlign: 'center',
-  },
-  moreAlertsText: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.warning,
-    fontWeight: '600',
-    paddingHorizontal: SPACING.md,
-    paddingTop: SPACING.sm,
-  },
+  footerBtn:       { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: SPACING.sm },
+  footerBtnText:   { fontSize: 12, fontWeight: '600', color: '#9CA3AF' },
+  footerBtnActive: { color: '#111827', fontWeight: '700' },
 });
