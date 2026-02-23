@@ -9,7 +9,6 @@ import { useApp } from '../context/AppContext';
 import { storageService } from '../services/storageServices';
 
 export default function ProfileScreen({ navigation }) {
-    const [helpModalVisible, setHelpModalVisible] = useState(false);
   const { user, setUser, userPoints, completedTasks } = useApp();
 
   const [profileName, setProfileName]   = useState(user?.displayName || user?.email || 'User');
@@ -127,7 +126,7 @@ export default function ProfileScreen({ navigation }) {
 
           {[
             { label: 'Achievements',         onPress: () => {} },
-            { label: 'Help & Support',        onPress: () => setHelpModalVisible(true) },
+            { label: 'Help & Support',        onPress: () => {} },
             { label: 'Developer Settings',    onPress: () => navigation.navigate('DeveloperSettings') },
           ].map((item, i, arr) => (
             <React.Fragment key={item.label}>
@@ -138,27 +137,6 @@ export default function ProfileScreen({ navigation }) {
               {i < arr.length - 1 && <View style={styles.divider} />}
             </React.Fragment>
           ))}
-      {/* Help & Support Modal */}
-      <Modal
-        visible={helpModalVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setHelpModalVisible(false)}
-      >
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' }}>
-          <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 28, width: '80%', alignItems: 'center' }}>
-            <Text style={{ fontWeight: 'bold', fontSize: 18, marginBottom: 12 }}>Help & Support</Text>
-            <Text style={{ fontSize: 15, color: '#374151', textAlign: 'center', marginBottom: 18 }}>
-              For assistance, contact us at
-              <Text style={{ color: '#2563EB', fontWeight: '600' }}> support@preparenow.com </Text>
-              or visit our FAQ in the app settings.
-            </Text>
-            <TouchableOpacity onPress={() => setHelpModalVisible(false)} style={{ marginTop: 8, backgroundColor: '#2563EB', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 24 }}>
-              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
 
           <View style={styles.divider} />
           <TouchableOpacity style={styles.menuItem} onPress={handleLogout} activeOpacity={0.6}>
