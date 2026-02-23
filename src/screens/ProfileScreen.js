@@ -1,19 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, TextInput, Image, Alert, Dimensions } from 'react-native';
-// import MapView, { Marker } from 'react-native-maps';
 import * as ImagePicker from 'expo-image-picker';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-// import { SHELTERS } from '../constants/shelters';
-// import { locationService } from '../services/locationService';
 import { useApp } from '../context/AppContext';
 import { storageService } from '../services/storageServices';
 
 export default function ProfileScreen({ navigation }) {
   const { user, setUser, userPoints, completedTasks } = useApp();
-  // Shelter/map state removed
 
-  // Shelter/map effect removed
-  // Profile state (name, image)
+  const handleLogout = async () => {
+    try {
+      const { auth } = await import('../config/firebase');
+      await auth.signOut();
+      setUser(null);
+      navigation.replace('SignIn');
+    } catch (err) {
+      Alert.alert('Logout Failed', err.message);
+    }
+  };
+
   const [profileName, setProfileName] = useState(user?.displayName || user?.email || 'User');
   const [profileImage, setProfileImage] = useState(user?.photoURL || null);
   const [editModalVisible, setEditModalVisible] = useState(false);
@@ -29,10 +34,8 @@ export default function ProfileScreen({ navigation }) {
 
   // Stats
   const tasksCompleted = completedTasks.length;
-  // Assume quizzes have 'quiz' in their id or use a better filter if available
   const quizzesPassed = completedTasks.filter(id => typeof id === 'string' ? id.includes('quiz') : false).length;
 
-  // Edit profile handlers
   const openEditModal = () => {
     setNameInput(profileName);
     setImageInput(profileImage);
@@ -41,11 +44,11 @@ export default function ProfileScreen({ navigation }) {
   const closeEditModal = () => setEditModalVisible(false);
 
   const handlePickImage = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({ 
-      mediaTypes: ImagePicker.MediaTypeOptions.Images, 
-      allowsEditing: true, 
-      aspect: [1, 1], 
-      quality: 0.5 
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.5,
     });
     if (!result.canceled && result.assets && result.assets.length > 0) {
       setImageInput(result.assets[0].uri);
@@ -55,11 +58,9 @@ export default function ProfileScreen({ navigation }) {
   const handleSaveProfile = async () => {
     setProfileName(nameInput);
     setProfileImage(imageInput);
-    // Optionally update user context if using Firebase Auth
     if (setUser && user) {
       setUser({ ...user, displayName: nameInput, photoURL: imageInput });
     }
-    // Save to local storage for persistence
     await storageService.savePreferences({ name: nameInput, image: imageInput });
     setEditModalVisible(false);
     Alert.alert('Profile updated');
@@ -73,7 +74,6 @@ export default function ProfileScreen({ navigation }) {
           <Text style={styles.headerTitle}>PrepareNow</Text>
         </View>
 
-        {/* Profile Card */}
         <View style={styles.content}>
           {/* Avatar Section */}
           <View style={styles.avatarSection}>
@@ -118,21 +118,28 @@ export default function ProfileScreen({ navigation }) {
             </View>
           </View>
 
-          {/* Map Section removed */}
-
           {/* Menu Section */}
           <View style={styles.menuSection}>
             <Text style={styles.sectionTitle}>MENU</Text>
+
             <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('DeveloperSettings')}>
               <Text style={styles.menuItemText}>Developer Settings</Text>
             </TouchableOpacity>
             <View style={styles.divider} />
+
             <TouchableOpacity style={styles.menuItem} onPress={() => {}}>
               <Text style={styles.menuItemText}>Achievements</Text>
             </TouchableOpacity>
             <View style={styles.divider} />
+
             <TouchableOpacity style={styles.menuItem} onPress={() => {}}>
               <Text style={styles.menuItemText}>Help & Support</Text>
+            </TouchableOpacity>
+            <View style={styles.divider} />
+
+            {/* ✅ Logout sits inside the menu card, directly below Help & Support */}
+            <TouchableOpacity style={styles.menuItem} onPress={handleLogout}>
+              <Text style={styles.menuItemTextLogout}>Log Out</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -174,19 +181,19 @@ export default function ProfileScreen({ navigation }) {
 
       {/* Footer Navigation */}
       <View style={styles.footer}>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Home')} accessibilityLabel="Go to Home">
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Home')}>
           <Text style={styles.footerButtonText}>Home</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Alerts')} accessibilityLabel="Go to Alerts">
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Alerts')}>
           <Text style={styles.footerButtonText}>Alerts</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Prepare')} accessibilityLabel="Go to Prepare">
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Prepare')}>
           <Text style={styles.footerButtonText}>Prepare</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Plan')} accessibilityLabel="Go to Plan">
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Plan')}>
           <Text style={styles.footerButtonText}>Plan</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Profile')} accessibilityLabel="Go to Profile">
+        <TouchableOpacity style={styles.footerButton} onPress={() => navigation.navigate('Profile')}>
           <Text style={[styles.footerButtonText, styles.footerButtonActive]}>Profile</Text>
         </TouchableOpacity>
       </View>
@@ -201,17 +208,6 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     flex: 1,
-  },
-  mapSection: {
-    marginTop: SPACING.lg,
-    marginBottom: SPACING.lg,
-    alignItems: 'center',
-  },
-  map: {
-    width: Dimensions.get('window').width - 32,
-    height: 250,
-    borderRadius: BORDER_RADIUS.md,
-    marginTop: SPACING.sm,
   },
   header: {
     padding: SPACING.lg,
@@ -362,6 +358,12 @@ const styles = StyleSheet.create({
   menuItemText: {
     ...TYPOGRAPHY.body,
     color: COLORS.text,
+    fontWeight: '600',
+    fontSize: 16,
+  },
+  menuItemTextLogout: {
+    ...TYPOGRAPHY.body,
+    color: '#DC2626',
     fontWeight: '600',
     fontSize: 16,
   },

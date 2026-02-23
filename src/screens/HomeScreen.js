@@ -11,16 +11,22 @@ import {
 } from 'react-native';
 import { locationService, subscribeToDisasterZones, unsubscribeFromDisasterZones, subscribeToLocationChanges } from '../services/locationService';
 import { useApp } from '../context/AppContext';
+import { PREPAREDNESS_TASKS, TOTAL_TASKS } from '../constants/tasks';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../constants/theme';
 
 export default function HomeScreen({ navigation }) {
-  const { user, monitoringActive, setMonitoringActive, currentLocation, setCurrentLocation } = useApp();
+  const { user, monitoringActive, setMonitoringActive, currentLocation, setCurrentLocation, completedTasks } = useApp();
   const [nearbyZones, setNearbyZones] = useState([]);
   const [liveAlerts, setLiveAlerts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [zoneCount, setZoneCount] = useState(0);
-  const [preparednessLevel, setPreparednessLevel] = useState(0);
+
+  // ✅ Preparedness % = completed tasks (that exist in our 14-task list) / 14
+  const completedCount = completedTasks
+    ? completedTasks.filter(id => PREPAREDNESS_TASKS.some(task => task.id === id)).length
+    : 0;
+  const preparednessLevel = TOTAL_TASKS > 0 ? Math.round((completedCount / TOTAL_TASKS) * 100) : 0;
 
   useEffect(() => {
     initializeMonitoring();
@@ -29,13 +35,10 @@ export default function HomeScreen({ navigation }) {
   useEffect(() => {
     const unsubscribe = subscribeToDisasterZones((zones) => {
       setZoneCount(zones.length);
-      // NOTE: restartGeofencing removed — was causing repeated entry notifications
-      // on every Firebase zone update. UI-only update now.
       if (currentLocation) {
         updateNearbyZones(currentLocation);
       }
     });
-
     return () => {
       unsubscribeFromDisasterZones();
     };
@@ -67,8 +70,6 @@ export default function HomeScreen({ navigation }) {
   }, []);
 
   const initializeMonitoring = async () => {
-    // Guard: if already monitoring, just refresh location — don't restart geofencing.
-    // Prevents flood of entry notifications every time the screen re-mounts.
     if (monitoringActive) {
       console.log('✅ Already monitoring — skipping restart, refreshing location only');
       await loadLocation();
@@ -124,9 +125,6 @@ export default function HomeScreen({ navigation }) {
   };
 
   const checkForLiveAlerts = (coords) => {
-    // Deduplicate by title + disasterType key, not just id.
-    // Firebase may store multiple zone documents for the same physical area
-    // (e.g. different radius rings), which would previously show as duplicates.
     const seenKeys = new Set();
 
     const activeAlerts = nearbyZones
@@ -142,14 +140,12 @@ export default function HomeScreen({ navigation }) {
         title: zone.title,
       }))
       .filter(alert => {
-        // Collapse duplicates: same title + disasterType = same real-world event
         const dedupeKey = `${alert.type}-${alert.disasterType}`;
         if (seenKeys.has(dedupeKey)) return false;
         seenKeys.add(dedupeKey);
         return true;
       })
       .sort((a, b) => {
-        // Inside zones always appear first
         if (a.isInside && !b.isInside) return -1;
         if (!a.isInside && b.isInside) return 1;
         return parseFloat(a.distance) - parseFloat(b.distance);
@@ -282,12 +278,16 @@ export default function HomeScreen({ navigation }) {
             </View>
             <Text style={styles.levelText}>{getPreparednessLabel()}</Text>
           </View>
+          {/* Show tasks completed count beneath the bar */}
+          <Text style={styles.tasksCompletedText}>
+            {completedCount} of {TOTAL_TASKS} tasks completed
+          </Text>
           <TouchableOpacity
             style={styles.continueButton}
             onPress={() => navigation.navigate('Prepare')}
           >
             <Text style={styles.continueButtonText}>
-              {preparednessLevel === 0 ? 'START PREPARING' : 'CONTINUE PREPARING'}
+              {preparednessLevel === 0 ? 'START PREPARING' : preparednessLevel === 100 ? 'VIEW TASKS' : 'CONTINUE PREPARING'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -483,6 +483,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.xs,
     borderRadius: BORDER_RADIUS.full,
+  },
+  tasksCompletedText: {
+    ...TYPOGRAPHY.caption,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    marginTop: SPACING.sm,
+    fontSize: 12,
   },
   continueButton: {
     backgroundColor: COLORS.text,

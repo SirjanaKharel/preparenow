@@ -1,75 +1,33 @@
 import React from 'react';
-import { StatusBar } from 'react-native';
+import { StatusBar, View, ActivityIndicator } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { AppProvider } from './src/context/AppContext';
+import { AppProvider, useApp } from './src/context/AppContext';
+import AppNavigator from './src/navigation/AppNavigator';
 
-// Import all screens
+// Separate component so it can access AppContext via useApp
+const Root = () => {
+  const { loading } = useApp();
 
-import HomeScreen from './src/screens/HomeScreen';
-import AlertsScreen from './src/screens/AlertsScreen';
-import PrepareScreen from './src/screens/PrepareScreen';
-import PlanScreen from './src/screens/PlanScreen';
-import ProfileScreen from './src/screens/ProfileScreen';
-import QuizScreen from './src/screens/QuizScreen';
-import SkillScreen from './src/screens/SkillScreen';
-import TaskScreen from './src/screens/TaskScreen';
-import DeveloperSettingsScreen from './src/screens/DeveloperSettingsScreen';
+  if (loading) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" />
+      </View>
+    );
+  }
 
-
-const Stack = createNativeStackNavigator();
+  return (
+    <NavigationContainer>
+      <AppNavigator />
+    </NavigationContainer>
+  );
+};
 
 export default function App() {
   return (
     <AppProvider>
       <StatusBar barStyle="dark-content" />
-      <NavigationContainer>
-        <Stack.Navigator 
-          initialRouteName="Home"
-          screenOptions={{
-            headerShown: false, // Hide headers since we have custom navigation
-          }}
-        >
-          <Stack.Screen 
-            name="Home" 
-            component={HomeScreen}
-          />
-          <Stack.Screen 
-            name="Alerts" 
-            component={AlertsScreen}
-          />
-          <Stack.Screen 
-            name="Prepare" 
-            component={PrepareScreen}
-          />
-          <Stack.Screen 
-            name="Plan" 
-            component={PlanScreen}
-          />
-          <Stack.Screen 
-            name="Profile" 
-            component={ProfileScreen}
-          />
-          <Stack.Screen 
-            name="Quiz" 
-            component={QuizScreen}
-          />
-          <Stack.Screen 
-            name="Skill" 
-            component={SkillScreen}
-          />
-          <Stack.Screen 
-            name="Task" 
-            component={TaskScreen}
-          />
-
-          <Stack.Screen 
-            name="DeveloperSettings" 
-            component={DeveloperSettingsScreen}
-          />
-
-        </Stack.Navigator>
-      </NavigationContainer>
+      <Root />
     </AppProvider>
   );
 }

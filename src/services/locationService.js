@@ -8,7 +8,7 @@ import { DISASTER_TYPES, SEVERITY_LEVELS } from '../constants/disasters';
 
 const LOCATION_TASK_NAME = 'background-location-task';
 const GEOFENCING_TASK_NAME = 'geofencing-task';
-const NOTIFICATION_COOLDOWN = 10 * 60 * 1000; // 10 minutes in milliseconds
+const NOTIFICATION_COOLDOWN = 10 * 60 * 1000; // 10 minutes
 
 // Track if app has just started to prevent exit notifications on initial load
 let isInitialAppLoad = true;
@@ -57,11 +57,8 @@ export const subscribeToDisasterZones = (callback) => {
     const q = query(zonesRef, where('isActive', '==', true));
 
     zonesListener = onSnapshot(q, (snapshot) => {
-      DISASTER_ZONES = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-      console.log(`✅ Loaded ${DISASTER_ZONES.length} active disaster zones from Firebase (GDACS)`);
+      DISASTER_ZONES = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      console.log(`✅ Loaded ${DISASTER_ZONES.length} active disaster zones from Firebase`);
       if (callback) callback(DISASTER_ZONES);
     }, (error) => {
       console.error('❌ Error subscribing to disaster zones:', error);
@@ -78,7 +75,6 @@ export const subscribeToDisasterZones = (callback) => {
   }
 };
 
-// Unsubscribe from disaster zones
 export const unsubscribeFromDisasterZones = () => {
   if (zonesListener) {
     zonesListener();
@@ -87,126 +83,127 @@ export const unsubscribeFromDisasterZones = () => {
   }
 };
 
-// Load disaster zones once without subscription
 const loadDisasterZonesOnce = async () => {
   try {
     const zonesRef = collection(db, 'disaster_zones');
     const q = query(zonesRef, where('isActive', '==', true));
     const snapshot = await getDocs(q);
-
-    DISASTER_ZONES = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
-
-    console.log(`✅ Loaded ${DISASTER_ZONES.length} disaster zones from Firebase (GDACS)`);
-
+    DISASTER_ZONES = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    console.log(`✅ Loaded ${DISASTER_ZONES.length} disaster zones from Firebase`);
     if (DISASTER_ZONES.length === 0) {
-      console.warn('⚠️ No disaster zones found in Firebase. Run the GDACS sync script to populate zones.');
+      console.warn('⚠️ No disaster zones found. Run the GDACS sync script.');
     }
   } catch (error) {
-    console.error('❌ Error loading disaster zones from Firebase:', error);
+    console.error('❌ Error loading disaster zones:', error);
     DISASTER_ZONES = [];
   }
 };
 
-// Developer mode functions
+// Developer mode
 export const setDeveloperMode = async (enabled, testLocation = null) => {
   DEVELOPER_MODE = enabled;
   TEST_LOCATION = testLocation;
   console.log('🛠️ Developer mode:', enabled ? 'ENABLED' : 'DISABLED', testLocation);
-
   if (enabled && testLocation) {
-    console.log('🔄 Test location updated — triggering immediate zone check...');
     notifyLocationListeners(testLocation);
-    try {
-      await locationService.manualCheckZones();
-    } catch (e) {
-      console.warn('⚠️ Zone check after dev mode update failed:', e.message);
-    }
+    try { await locationService.manualCheckZones(); }
+    catch (e) { console.warn('⚠️ Zone check after dev mode update failed:', e.message); }
   }
 };
 
-export const getDeveloperMode = () => {
-  return { enabled: DEVELOPER_MODE, location: TEST_LOCATION };
+export const getDeveloperMode = () => ({ enabled: DEVELOPER_MODE, location: TEST_LOCATION });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STORE EVENT — the single most important dedup gate.
+// Before writing, check if an identical zone+type event already exists within
+// the cooldown window. If so, skip entirely. This is what stops 3x "Entered
+// Lewotobi" from ever reaching AsyncStorage in the first place.
+// ─────────────────────────────────────────────────────────────────────────────
+const storeEvent = async (event) => {
+  try {
+    const eventsJson = await AsyncStorage.getItem('disaster_events');
+    const events = eventsJson ? JSON.parse(eventsJson) : [];
+
+    const isDuplicate = events.some(e =>
+      e.zone === event.zone &&
+      e.type === event.type &&
+      (Date.now() - new Date(e.timestamp).getTime()) < NOTIFICATION_COOLDOWN
+    );
+
+    if (isDuplicate) {
+      console.log(`⏭️ Skipping duplicate event for ${event.zone} (${event.type}) — already stored within cooldown`);
+      return false; // signal: not stored
+    }
+
+    events.unshift(event);
+    await AsyncStorage.setItem('disaster_events', JSON.stringify(events.slice(0, 100)));
+    console.log(`✅ Event stored: ${event.type} → ${event.zone}`);
+    return true; // signal: stored
+  } catch (error) {
+    console.error('❌ Error storing event:', error);
+    return false;
+  }
 };
 
-// Check if notification should be sent (duplicate prevention)
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTIFICATION COOLDOWN CHECK
+// Secondary guard — used before sending push notifications.
+// ─────────────────────────────────────────────────────────────────────────────
 const shouldSendNotification = async (zoneId, eventType) => {
   try {
     const eventsJson = await AsyncStorage.getItem('disaster_events');
     const events = eventsJson ? JSON.parse(eventsJson) : [];
 
     if (eventType === 'exit') {
-      const hasEntryEvent = events.some(event =>
-        event.zone === zoneId && event.type === 'enter'
-      );
-      if (!hasEntryEvent) {
-        console.log(`⏭️ Skipping exit notification for ${zoneId} - no entry event found`);
+      const hasEntry = events.some(e => e.zone === zoneId && e.type === 'enter');
+      if (!hasEntry) {
+        console.log(`⏭️ Skipping exit notification for ${zoneId} — no entry recorded`);
         return false;
       }
     }
 
-    const recentEvent = events.find(event =>
-      event.zone === zoneId && event.type === eventType
-    );
+    const recent = events.find(e => e.zone === zoneId && e.type === eventType);
+    if (!recent) return true;
 
-    if (!recentEvent) return true;
-
-    const lastEventTime = new Date(recentEvent.timestamp);
-    const timeSinceLastEvent = Date.now() - lastEventTime.getTime();
-
-    if (timeSinceLastEvent < NOTIFICATION_COOLDOWN) {
-      console.log(`⏭️ Skipping ${eventType} notification for ${zoneId} - notified ${Math.round(timeSinceLastEvent / 1000)}s ago`);
+    const elapsed = Date.now() - new Date(recent.timestamp).getTime();
+    if (elapsed < NOTIFICATION_COOLDOWN) {
+      console.log(`⏭️ Cooldown active for ${zoneId} (${eventType}) — ${Math.round(elapsed / 1000)}s elapsed`);
       return false;
     }
 
     return true;
   } catch (error) {
-    console.error('❌ Error checking notification cooldown:', error);
+    console.error('❌ Error checking cooldown:', error);
     return true;
   }
 };
 
-// Define the geofencing task
+// Geofencing background task
 TaskManager.defineTask(GEOFENCING_TASK_NAME, async ({ data, error }) => {
-  if (error) {
-    console.error('❌ Geofencing task error:', error);
-    return;
-  }
+  if (error) { console.error('❌ Geofencing task error:', error); return; }
 
   if (data.eventType === Location.GeofencingEventType.Enter) {
-    const { region } = data;
-    const shouldNotify = await shouldSendNotification(region.identifier, 'enter');
-    if (shouldNotify) {
-      await handleZoneEntry(region);
-    }
-  } else if (data.eventType === Location.GeofencingEventType.Exit) {
-    const { region } = data;
+    const shouldNotify = await shouldSendNotification(data.region.identifier, 'enter');
+    if (shouldNotify) await handleZoneEntry(data.region);
 
+  } else if (data.eventType === Location.GeofencingEventType.Exit) {
     if (isInitialAppLoad) {
-      console.log('⏭️ Skipping exit notification on initial load for:', region.identifier);
+      console.log('⏭️ Skipping exit on initial load:', data.region.identifier);
       return;
     }
-
-    const shouldNotify = await shouldSendNotification(region.identifier, 'exit');
-    if (shouldNotify) {
-      await handleZoneExit(region);
-    }
+    const shouldNotify = await shouldSendNotification(data.region.identifier, 'exit');
+    if (shouldNotify) await handleZoneExit(data.region);
   }
 });
 
-// Handle zone entry
+// Handle zone entry — store event then send notification
 const handleZoneEntry = async (region) => {
   const zone = DISASTER_ZONES.find(z => z.id === region.identifier);
-  if (!zone) {
-    console.warn('⚠️ Zone not found for identifier:', region.identifier);
-    return;
-  }
+  if (!zone) { console.warn('⚠️ Zone not found:', region.identifier); return; }
 
   console.log('🚨 Entered zone:', zone.id, zone.title);
 
-  await storeEvent({
+  const stored = await storeEvent({
     type: 'enter',
     zone: zone.id,
     title: zone.title,
@@ -216,20 +213,20 @@ const handleZoneEntry = async (region) => {
     disasterType: zone.disasterType,
   });
 
-  await sendDisasterAlert(zone, 'enter');
+  // Only send push notification if the event was actually stored (not a duplicate)
+  if (stored) {
+    await sendDisasterAlert(zone, 'enter');
+  }
 };
 
-// Handle zone exit
+// Handle zone exit — store event then send notification
 const handleZoneExit = async (region) => {
   const zone = DISASTER_ZONES.find(z => z.id === region.identifier);
-  if (!zone) {
-    console.warn('⚠️ Zone not found for identifier:', region.identifier);
-    return;
-  }
+  if (!zone) { console.warn('⚠️ Zone not found:', region.identifier); return; }
 
   console.log('✅ Exited zone:', zone.id, zone.title);
 
-  await storeEvent({
+  const stored = await storeEvent({
     type: 'exit',
     zone: zone.id,
     title: zone.title,
@@ -239,40 +236,13 @@ const handleZoneExit = async (region) => {
     disasterType: zone.disasterType,
   });
 
-  await sendDisasterAlert(zone, 'exit');
-};
-
-// Store event in AsyncStorage with deduplication.
-// Prevents the same zone+type from being stored multiple times within the cooldown window,
-// which was causing "Entered Lewotobi" to appear 3x in Recent Alerts.
-const storeEvent = async (event) => {
-  try {
-    console.log('💾 Storing event:', event.type, event.zone);
-    const eventsJson = await AsyncStorage.getItem('disaster_events');
-    const events = eventsJson ? JSON.parse(eventsJson) : [];
-
-    // Deduplicate: skip if identical zone+type event already stored within cooldown window
-    const isDuplicate = events.some(e =>
-      e.zone === event.zone &&
-      e.type === event.type &&
-      (Date.now() - new Date(e.timestamp).getTime()) < NOTIFICATION_COOLDOWN
-    );
-
-    if (isDuplicate) {
-      console.log(`⏭️ Skipping duplicate event storage for ${event.zone} (${event.type})`);
-      return;
-    }
-
-    events.unshift(event);
-    const trimmedEvents = events.slice(0, 100);
-    await AsyncStorage.setItem('disaster_events', JSON.stringify(trimmedEvents));
-    console.log('✅ Event stored successfully. Total events:', trimmedEvents.length);
-  } catch (error) {
-    console.error('❌ Error storing event:', error);
+  // Only send push notification if the event was actually stored (not a duplicate)
+  if (stored) {
+    await sendDisasterAlert(zone, 'exit');
   }
 };
 
-// Send disaster alert notification
+// Send push notification
 const sendDisasterAlert = async (zone, eventType) => {
   try {
     const messages = getAlertMessage(zone, eventType);
@@ -295,21 +265,16 @@ const sendDisasterAlert = async (zone, eventType) => {
       trigger: null,
     });
 
-    console.log('✅ Notification sent successfully');
-
-    if (eventType === 'enter') {
-      await saveAlertToFirestore(zone);
-    }
+    console.log('✅ Notification sent');
+    if (eventType === 'enter') await saveAlertToFirestore(zone);
   } catch (error) {
-    console.error('❌ Error sending disaster alert:', error);
+    console.error('❌ Error sending alert:', error);
   }
 };
 
-// Save alert to Firestore
 const saveAlertToFirestore = async (zone) => {
   try {
-    const alertsRef = collection(db, 'alerts');
-    await addDoc(alertsRef, {
+    await addDoc(collection(db, 'alerts'), {
       title: zone.title,
       description: zone.description,
       severity: zone.severity,
@@ -323,223 +288,116 @@ const saveAlertToFirestore = async (zone) => {
     });
     console.log('✅ Alert saved to Firestore');
   } catch (error) {
-    console.warn('⚠️ Error saving alert to Firestore:', error);
+    console.warn('⚠️ Error saving to Firestore:', error);
   }
 };
 
-// Get alert message based on zone and event type
 const getAlertMessage = (zone, eventType) => {
   const isEntry = eventType === 'enter';
-  const severity = zone.severity.toUpperCase();
+  const severity = zone.severity?.toUpperCase() || 'ALERT';
 
-  const messages = {
-    enter: {
-      flood: {
-        critical: {
-          title: '🚨 CRITICAL FLOOD ALERT',
-          body: `You have entered a CRITICAL flood zone: ${zone.title || zone.description}. Seek higher ground immediately. Call 999 if in danger.`,
-        },
-        high: {
-          title: '⚠️ HIGH FLOOD ALERT',
-          body: `You are in a high-risk flood area: ${zone.title || zone.description}. Move to higher ground and avoid water.`,
-        },
-        warning: {
-          title: '⚠️ Flood Warning',
-          body: `You have entered a flood warning area: ${zone.title || zone.description}. Stay alert and avoid low-lying areas.`,
-        },
-        info: {
-          title: 'ℹ️ Flood Information',
-          body: `You are in an area with potential flood risk: ${zone.title || zone.description}. Monitor conditions.`,
-        },
-      },
-      fire: {
-        critical: {
-          title: '🚨 CRITICAL FIRE ALERT',
-          body: `IMMEDIATE DANGER: ${zone.title || zone.description}. Evacuate immediately. Call 999.`,
-        },
-        high: {
-          title: '🔥 HIGH FIRE ALERT',
-          body: `You are near an active fire: ${zone.title || zone.description}. Follow evacuation orders and stay alert.`,
-        },
-        warning: {
-          title: '🔥 Fire Warning',
-          body: `Fire risk in this area: ${zone.title || zone.description}. Stay informed and be ready to evacuate.`,
-        },
-        info: {
-          title: 'ℹ️ Fire Information',
-          body: `Elevated fire risk: ${zone.title || zone.description}. Avoid ignition sources.`,
-        },
-      },
-      storm: {
-        critical: {
-          title: '🚨 SEVERE STORM WARNING',
-          body: `Dangerous storm conditions: ${zone.title || zone.description}. Seek shelter immediately.`,
-        },
-        high: {
-          title: '⛈️ HIGH STORM ALERT',
-          body: `Severe storm approaching: ${zone.title || zone.description}. Take shelter and secure loose objects.`,
-        },
-        warning: {
-          title: '⛈️ Storm Warning',
-          body: `Storm warning active: ${zone.title || zone.description}. Stay indoors and monitor conditions.`,
-        },
-        info: {
-          title: 'ℹ️ Storm Information',
-          body: `Stormy weather expected: ${zone.title || zone.description}. Stay alert.`,
-        },
-      },
-      evacuation: {
-        critical: {
-          title: '🚨 MANDATORY EVACUATION',
-          body: `You are in a mandatory evacuation zone: ${zone.title || zone.description}. Leave immediately. Follow official routes.`,
-        },
-        high: {
-          title: '⚠️ EVACUATION ALERT',
-          body: `Evacuation recommended: ${zone.title || zone.description}. Prepare to leave and follow official guidance.`,
-        },
-        warning: {
-          title: '⚠️ Evacuation Warning',
-          body: `Be prepared to evacuate: ${zone.title || zone.description}. Monitor official channels.`,
-        },
-        info: {
-          title: 'ℹ️ Evacuation Information',
-          body: `Potential evacuation area: ${zone.title || zone.description}. Stay informed.`,
-        },
-      },
-      earthquake: {
-        critical: {
-          title: '🚨 CRITICAL EARTHQUAKE ALERT',
-          body: `Major earthquake detected: ${zone.title || zone.description}. Drop, Cover, and Hold On. Seek safe shelter.`,
-        },
-        high: {
-          title: '⚠️ EARTHQUAKE ALERT',
-          body: `Earthquake activity detected: ${zone.title || zone.description}. Stay away from buildings and windows.`,
-        },
-        warning: {
-          title: '⚠️ Earthquake Warning',
-          body: `Seismic activity in area: ${zone.title || zone.description}. Be prepared for aftershocks.`,
-        },
-        info: {
-          title: 'ℹ️ Earthquake Information',
-          body: `Earthquake zone: ${zone.title || zone.description}. Stay alert for seismic activity.`,
-        },
-      },
+  const enterMessages = {
+    flood: {
+      critical: { title: '🚨 CRITICAL FLOOD ALERT', body: `You have entered a CRITICAL flood zone: ${zone.title || zone.description}. Seek higher ground immediately. Call 999 if in danger.` },
+      high:     { title: '⚠️ HIGH FLOOD ALERT',     body: `You are in a high-risk flood area: ${zone.title || zone.description}. Move to higher ground and avoid water.` },
+      warning:  { title: '⚠️ Flood Warning',         body: `You have entered a flood warning area: ${zone.title || zone.description}. Stay alert and avoid low-lying areas.` },
+      info:     { title: 'ℹ️ Flood Information',      body: `You are in an area with potential flood risk: ${zone.title || zone.description}. Monitor conditions.` },
     },
-    exit: {
-      flood:      { title: '✓ Left Flood Zone',      body: `You have exited the flood zone: ${zone.title || zone.description}. Stay alert.` },
-      fire:       { title: '✓ Left Fire Zone',       body: `You have exited the fire risk area: ${zone.title || zone.description}.` },
-      storm:      { title: '✓ Left Storm Zone',      body: `You have exited the storm warning area: ${zone.title || zone.description}.` },
-      evacuation: { title: '✓ Left Evacuation Zone', body: `You have exited the evacuation zone: ${zone.title || zone.description}.` },
-      earthquake: { title: '✓ Left Earthquake Zone', body: `You have exited the earthquake zone: ${zone.title || zone.description}.` },
+    fire: {
+      critical: { title: '🚨 CRITICAL FIRE ALERT', body: `IMMEDIATE DANGER: ${zone.title || zone.description}. Evacuate immediately. Call 999.` },
+      high:     { title: '🔥 HIGH FIRE ALERT',     body: `You are near an active fire: ${zone.title || zone.description}. Follow evacuation orders.` },
+      warning:  { title: '🔥 Fire Warning',         body: `Fire risk in this area: ${zone.title || zone.description}. Be ready to evacuate.` },
+      info:     { title: 'ℹ️ Fire Information',      body: `Elevated fire risk: ${zone.title || zone.description}. Avoid ignition sources.` },
+    },
+    storm: {
+      critical: { title: '🚨 SEVERE STORM WARNING', body: `Dangerous storm conditions: ${zone.title || zone.description}. Seek shelter immediately.` },
+      high:     { title: '⛈️ HIGH STORM ALERT',     body: `Severe storm approaching: ${zone.title || zone.description}. Take shelter.` },
+      warning:  { title: '⛈️ Storm Warning',         body: `Storm warning active: ${zone.title || zone.description}. Stay indoors.` },
+      info:     { title: 'ℹ️ Storm Information',      body: `Stormy weather expected: ${zone.title || zone.description}. Stay alert.` },
+    },
+    evacuation: {
+      critical: { title: '🚨 MANDATORY EVACUATION', body: `You are in a mandatory evacuation zone: ${zone.title || zone.description}. Leave immediately.` },
+      high:     { title: '⚠️ EVACUATION ALERT',      body: `Evacuation recommended: ${zone.title || zone.description}. Prepare to leave.` },
+      warning:  { title: '⚠️ Evacuation Warning',    body: `Be prepared to evacuate: ${zone.title || zone.description}. Monitor official channels.` },
+      info:     { title: 'ℹ️ Evacuation Information', body: `Potential evacuation area: ${zone.title || zone.description}. Stay informed.` },
+    },
+    earthquake: {
+      critical: { title: '🚨 CRITICAL EARTHQUAKE ALERT', body: `Major earthquake detected: ${zone.title || zone.description}. Drop, Cover, Hold On.` },
+      high:     { title: '⚠️ EARTHQUAKE ALERT',           body: `Earthquake activity: ${zone.title || zone.description}. Stay away from buildings.` },
+      warning:  { title: '⚠️ Earthquake Warning',         body: `Seismic activity in area: ${zone.title || zone.description}. Prepare for aftershocks.` },
+      info:     { title: 'ℹ️ Earthquake Information',      body: `Earthquake zone: ${zone.title || zone.description}. Stay alert.` },
     },
   };
 
+  const exitMessages = {
+    flood:      { title: '✓ Left Flood Zone',      body: `You have exited the flood zone: ${zone.title || zone.description}. Stay alert.` },
+    fire:       { title: '✓ Left Fire Zone',       body: `You have exited the fire risk area: ${zone.title || zone.description}.` },
+    storm:      { title: '✓ Left Storm Zone',      body: `You have exited the storm warning area: ${zone.title || zone.description}.` },
+    evacuation: { title: '✓ Left Evacuation Zone', body: `You have exited the evacuation zone: ${zone.title || zone.description}.` },
+    earthquake: { title: '✓ Left Earthquake Zone', body: `You have exited the earthquake zone: ${zone.title || zone.description}.` },
+  };
+
   if (isEntry) {
-    return messages.enter[zone.disasterType]?.[zone.severity] || {
+    return enterMessages[zone.disasterType]?.[zone.severity] || {
       title: `${severity} ALERT`,
       body: `You have entered a ${zone.severity} ${zone.disasterType} zone: ${zone.title || zone.description}`,
     };
   } else {
-    return messages.exit[zone.disasterType] || {
-      title: 'Zone Exited',
+    return exitMessages[zone.disasterType] || {
+      title: '✓ Zone Exited',
       body: `You have left the ${zone.disasterType} zone: ${zone.title || zone.description}`,
     };
   }
 };
 
 export const locationService = {
-  // Request permissions
   requestPermissions: async () => {
     try {
-      console.log('📍 Requesting location permissions...');
+      const { status: fg } = await Location.requestForegroundPermissionsAsync();
+      if (fg !== 'granted') return { success: false, error: 'Location permission denied.' };
 
-      const { status: foregroundStatus } = await Location.requestForegroundPermissionsAsync();
-      if (foregroundStatus !== 'granted') {
-        return { success: false, error: 'Location permission denied. PrepareNow needs location access to send emergency alerts.' };
-      }
-      console.log('✅ Foreground location permission granted');
+      const { status: bg } = await Location.requestBackgroundPermissionsAsync();
+      if (bg !== 'granted') return { success: false, error: 'Background location permission denied.' };
 
-      const { status: backgroundStatus } = await Location.requestBackgroundPermissionsAsync();
-      if (backgroundStatus !== 'granted') {
-        return { success: false, error: 'Background location permission denied. PrepareNow needs background access to monitor disaster zones.' };
-      }
-      console.log('✅ Background location permission granted');
-
-      const { status: notificationStatus } = await Notifications.requestPermissionsAsync();
-      if (notificationStatus !== 'granted') {
-        return { success: false, error: 'Notification permission denied. PrepareNow needs notification access to send alerts.' };
-      }
-      console.log('✅ All permissions granted successfully');
+      const { status: notif } = await Notifications.requestPermissionsAsync();
+      if (notif !== 'granted') return { success: false, error: 'Notification permission denied.' };
 
       return { success: true };
     } catch (error) {
-      console.error('❌ Error requesting permissions:', error);
       return { success: false, error: error.message };
     }
   },
 
-  // Get current location (with developer mode support)
   getCurrentLocation: async () => {
     if (DEVELOPER_MODE && TEST_LOCATION) {
-      console.log('🛠️ Using test location (Developer Mode):', TEST_LOCATION);
       return { success: true, location: { coords: TEST_LOCATION } };
     }
-
-    console.log('📍 Getting current location...');
-
     try {
-      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High, timeInterval: 5000 });
-      console.log('✅ Location obtained (high accuracy):', location.coords.latitude, location.coords.longitude);
-      return { success: true, location };
-    } catch (e1) {
-      console.warn('⚠️ High accuracy failed, trying low accuracy...');
-    }
-
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High, timeInterval: 5000 });
+      return { success: true, location: loc };
+    } catch { /* fall through */ }
     try {
-      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest });
-      console.log('✅ Location obtained (low accuracy):', location.coords.latitude, location.coords.longitude);
-      return { success: true, location };
-    } catch (e2) {
-      console.warn('⚠️ Low accuracy failed, trying last known position...');
-    }
-
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest });
+      return { success: true, location: loc };
+    } catch { /* fall through */ }
     try {
-      const lastLocation = await Location.getLastKnownPositionAsync();
-      if (lastLocation) {
-        console.log('✅ Using last known location:', lastLocation.coords.latitude, lastLocation.coords.longitude);
-        return { success: true, location: lastLocation };
-      }
-    } catch (e3) {
-      console.warn('⚠️ No last known position available');
-    }
-
-    console.error('❌ All location methods failed.');
-    return {
-      success: false,
-      isSimulatorError: true,
-      error: 'Could not get location. If testing on Simulator, go to Developer Settings and enable "Test Location".',
-    };
+      const last = await Location.getLastKnownPositionAsync();
+      if (last) return { success: true, location: last };
+    } catch { /* fall through */ }
+    return { success: false, isSimulatorError: true, error: 'Could not get location.' };
   },
 
-  // Start monitoring
   startMonitoring: async () => {
     try {
-      console.log('🚀 Starting disaster zone monitoring...');
-
-      // Guard: if already registered, skip — prevents duplicate entry notifications on re-mount
-      const isAlreadyRegistered = await TaskManager.isTaskRegisteredAsync(GEOFENCING_TASK_NAME);
-      if (isAlreadyRegistered) {
-        console.log('✅ Geofencing already registered — skipping restart to prevent duplicate notifications');
+      // Guard: already registered → skip to avoid duplicate entry events
+      const already = await TaskManager.isTaskRegisteredAsync(GEOFENCING_TASK_NAME);
+      if (already) {
+        console.log('✅ Geofencing already registered — skipping restart');
         return { success: true };
       }
 
-      if (DISASTER_ZONES.length === 0) {
-        await loadDisasterZonesOnce();
-      }
-
-      if (DISASTER_ZONES.length === 0) {
-        return { success: false, error: 'No disaster zones available. Please run the GDACS sync script to populate zones.' };
-      }
+      if (DISASTER_ZONES.length === 0) await loadDisasterZonesOnce();
+      if (DISASTER_ZONES.length === 0) return { success: false, error: 'No disaster zones available.' };
 
       const regions = DISASTER_ZONES.map(zone => ({
         identifier: zone.id,
@@ -550,36 +408,24 @@ export const locationService = {
         notifyOnExit: true,
       }));
 
-      console.log(`📍 Starting geofencing with ${regions.length} GDACS regions`);
       await Location.startGeofencingAsync(GEOFENCING_TASK_NAME, regions);
-      console.log('✅ Geofencing started successfully');
+      console.log(`✅ Geofencing started with ${regions.length} zones`);
 
-      const currentLocation = await locationService.getCurrentLocation();
-      if (currentLocation.success) {
-        await checkInitialZones(currentLocation.location.coords);
-      }
+      const loc = await locationService.getCurrentLocation();
+      if (loc.success) await checkInitialZones(loc.location.coords);
 
       return { success: true };
     } catch (error) {
-      console.error('❌ Start monitoring error:', error);
+      console.error('❌ startMonitoring error:', error);
       return { success: false, error: error.message };
     }
   },
 
-  // Restart geofencing with updated zones
   restartGeofencing: async () => {
     try {
-      console.log('🔄 Restarting geofencing with updated zones...');
-
-      const isRegistered = await TaskManager.isTaskRegisteredAsync(GEOFENCING_TASK_NAME);
-      if (isRegistered) {
-        await Location.stopGeofencingAsync(GEOFENCING_TASK_NAME);
-      }
-
-      if (DISASTER_ZONES.length === 0) {
-        console.warn('⚠️ No zones to restart geofencing with');
-        return { success: false, error: 'No zones available' };
-      }
+      const registered = await TaskManager.isTaskRegisteredAsync(GEOFENCING_TASK_NAME);
+      if (registered) await Location.stopGeofencingAsync(GEOFENCING_TASK_NAME);
+      if (DISASTER_ZONES.length === 0) return { success: false, error: 'No zones available' };
 
       const regions = DISASTER_ZONES.map(zone => ({
         identifier: zone.id,
@@ -591,251 +437,171 @@ export const locationService = {
       }));
 
       await Location.startGeofencingAsync(GEOFENCING_TASK_NAME, regions);
-      console.log(`✅ Geofencing restarted with ${regions.length} GDACS zones`);
+      console.log(`✅ Geofencing restarted with ${regions.length} zones`);
       return { success: true };
     } catch (error) {
-      console.error('❌ Error restarting geofencing:', error);
       return { success: false, error: error.message };
     }
   },
 
-  // Stop monitoring
   stopMonitoring: async () => {
     try {
-      console.log('🛑 Stopping disaster zone monitoring...');
-
-      const isRegistered = await TaskManager.isTaskRegisteredAsync(GEOFENCING_TASK_NAME);
-      if (isRegistered) {
-        await Location.stopGeofencingAsync(GEOFENCING_TASK_NAME);
-        console.log('✅ Geofencing stopped');
-      }
-
+      const registered = await TaskManager.isTaskRegisteredAsync(GEOFENCING_TASK_NAME);
+      if (registered) await Location.stopGeofencingAsync(GEOFENCING_TASK_NAME);
       unsubscribeFromDisasterZones();
-      console.log('✅ Monitoring stopped successfully');
       return { success: true };
     } catch (error) {
-      console.error('❌ Error stopping monitoring:', error);
       return { success: false, error: error.message };
     }
   },
 
-  // Get event history
   getEventHistory: async () => {
     try {
-      const eventsJson = await AsyncStorage.getItem('disaster_events');
-      const events = eventsJson ? JSON.parse(eventsJson) : [];
-      console.log(`📋 Retrieved ${events.length} events from history`);
+      const json = await AsyncStorage.getItem('disaster_events');
+      const events = json ? JSON.parse(json) : [];
       return { success: true, events };
     } catch (error) {
-      console.error('❌ Error getting event history:', error);
       return { success: false, error: error.message, events: [] };
     }
   },
 
-  // Get critical events from local history
   getCriticalEvents: async () => {
     try {
-      const eventsJson = await AsyncStorage.getItem('disaster_events');
-      const events = eventsJson ? JSON.parse(eventsJson) : [];
-      const criticalEvents = events.filter(event =>
-        event.type === 'enter' && (event.severity === 'high' || event.severity === 'critical')
-      );
-      console.log(`🚨 Found ${criticalEvents.length} critical events`);
-      return { success: true, events: criticalEvents };
+      const json = await AsyncStorage.getItem('disaster_events');
+      const events = json ? JSON.parse(json) : [];
+      return {
+        success: true,
+        events: events.filter(e => e.type === 'enter' && (e.severity === 'high' || e.severity === 'critical')),
+      };
     } catch (error) {
-      console.error('❌ Error getting critical events:', error);
       return { success: false, error: error.message, events: [] };
     }
   },
 
-  // Clear event history
   clearEventHistory: async () => {
     try {
       await AsyncStorage.removeItem('disaster_events');
-      console.log('🗑️ Event history cleared');
       return { success: true };
     } catch (error) {
-      console.error('❌ Error clearing event history:', error);
       return { success: false, error: error.message };
     }
   },
 
-  // Calculate distance between two points (Haversine formula)
   calculateDistance: (lat1, lon1, lat2, lon2) => {
     const R = 6371e3;
     const φ1 = (lat1 * Math.PI) / 180;
     const φ2 = (lat2 * Math.PI) / 180;
     const Δφ = ((lat2 - lat1) * Math.PI) / 180;
     const Δλ = ((lon2 - lon1) * Math.PI) / 180;
-    const a =
-      Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-      Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
+    const a = Math.sin(Δφ/2)**2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   },
 
-  // Check if user is in any zone
   isInZone: (userLat, userLon, zone) => {
-    const distance = locationService.calculateDistance(userLat, userLon, zone.latitude, zone.longitude);
-    return distance <= zone.radius;
+    return locationService.calculateDistance(userLat, userLon, zone.latitude, zone.longitude) <= zone.radius;
   },
 
-  // Get nearby zones
   getNearbyZones: async (userLocation) => {
-    const zones = DISASTER_ZONES.map(zone => {
+    return DISASTER_ZONES.map(zone => {
       const distance = locationService.calculateDistance(
-        userLocation.latitude,
-        userLocation.longitude,
-        zone.latitude,
-        zone.longitude
+        userLocation.latitude, userLocation.longitude, zone.latitude, zone.longitude
       );
       return { ...zone, distance: Math.round(distance), isInside: distance <= zone.radius };
     }).sort((a, b) => a.distance - b.distance);
-
-    console.log(`📍 Found ${zones.length} nearby GDACS zones`);
-    return zones;
   },
 
-  // Get currently active zones (zones user is inside)
   getActiveZones: async () => {
     try {
-      const currentLocation = await locationService.getCurrentLocation();
-      if (!currentLocation.success) {
-        return { success: false, error: currentLocation.error, zones: [] };
-      }
-
-      const { latitude, longitude } = currentLocation.location.coords;
-      const activeZones = [];
-
-      for (const zone of DISASTER_ZONES) {
-        const distance = locationService.calculateDistance(latitude, longitude, zone.latitude, zone.longitude);
-        if (distance <= zone.radius) {
-          activeZones.push({ ...zone, distance: Math.round(distance) });
-        }
-      }
-
-      console.log(`🚨 Currently in ${activeZones.length} active zones`);
-      return { success: true, zones: activeZones };
+      const loc = await locationService.getCurrentLocation();
+      if (!loc.success) return { success: false, error: loc.error, zones: [] };
+      const { latitude, longitude } = loc.location.coords;
+      const active = DISASTER_ZONES.filter(zone =>
+        locationService.calculateDistance(latitude, longitude, zone.latitude, zone.longitude) <= zone.radius
+      ).map(zone => ({ ...zone, distance: Math.round(locationService.calculateDistance(latitude, longitude, zone.latitude, zone.longitude)) }));
+      return { success: true, zones: active };
     } catch (error) {
-      console.error('❌ Error getting active zones:', error);
       return { success: false, error: error.message, zones: [] };
     }
   },
 
-  // Get live alerts from Firestore
   getLiveAlerts: async () => {
     try {
-      const alertsRef = collection(db, 'alerts');
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const q = query(alertsRef, where('timestamp', '>=', Timestamp.fromDate(twentyFourHoursAgo)));
-      const querySnapshot = await getDocs(q);
-      const alerts = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        timestamp: doc.data().timestamp?.toDate?.() || new Date(doc.data().timestamp),
-      }));
-      console.log(`📡 Retrieved ${alerts.length} live alerts from Firestore`);
-      return { success: true, alerts };
+      const ago24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const snap = await getDocs(query(collection(db, 'alerts'), where('timestamp', '>=', Timestamp.fromDate(ago24h))));
+      return {
+        success: true,
+        alerts: snap.docs.map(doc => ({
+          id: doc.id, ...doc.data(),
+          timestamp: doc.data().timestamp?.toDate?.() || new Date(doc.data().timestamp),
+        })),
+      };
     } catch (error) {
-      console.warn('⚠️ Error fetching live alerts from Firestore:', error);
       return { success: false, error: error.message, alerts: [] };
     }
   },
 
-  // Get critical alerts only
   getCriticalAlerts: async () => {
     try {
-      const alertsRef = collection(db, 'alerts');
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const q = query(
-        alertsRef,
+      const ago24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const snap = await getDocs(query(
+        collection(db, 'alerts'),
         where('severity', '==', 'critical'),
-        where('timestamp', '>=', Timestamp.fromDate(twentyFourHoursAgo))
-      );
-      const querySnapshot = await getDocs(q);
-      const alerts = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        timestamp: doc.data().timestamp?.toDate?.() || new Date(doc.data().timestamp),
-      }));
-      console.log(`🚨 Retrieved ${alerts.length} critical alerts from Firestore`);
-      return { success: true, alerts };
+        where('timestamp', '>=', Timestamp.fromDate(ago24h))
+      ));
+      return {
+        success: true,
+        alerts: snap.docs.map(doc => ({
+          id: doc.id, ...doc.data(),
+          timestamp: doc.data().timestamp?.toDate?.() || new Date(doc.data().timestamp),
+        })),
+      };
     } catch (error) {
-      console.warn('⚠️ Error fetching critical alerts from Firestore:', error);
       return { success: false, error: error.message, alerts: [] };
     }
   },
 
-  // Manually check zones and trigger alerts
   manualCheckZones: async () => {
     try {
-      console.log('🔍 Manually checking zones...');
-      const currentLocation = await locationService.getCurrentLocation();
+      const loc = await locationService.getCurrentLocation();
+      if (!loc.success) return { success: false, error: loc.error, zonesTriggered: [] };
 
-      if (!currentLocation.success) {
-        return { success: false, error: currentLocation.error, zonesTriggered: [] };
-      }
-
-      const { latitude, longitude } = currentLocation.location.coords;
-      console.log('📍 Current location:', latitude, longitude);
-
-      let zonesTriggered = [];
+      const { latitude, longitude } = loc.location.coords;
+      const triggered = [];
 
       for (const zone of DISASTER_ZONES) {
-        const distance = locationService.calculateDistance(latitude, longitude, zone.latitude, zone.longitude);
-        console.log(`📏 Distance to ${zone.id}: ${Math.round(distance)}m (radius: ${zone.radius}m)`);
-
-        if (distance <= zone.radius) {
-          console.log('🚨 User is in zone:', zone.id);
+        const dist = locationService.calculateDistance(latitude, longitude, zone.latitude, zone.longitude);
+        if (dist <= zone.radius) {
           const shouldNotify = await shouldSendNotification(zone.id, 'enter');
           if (shouldNotify) {
             await handleZoneEntry({ identifier: zone.id });
-            zonesTriggered.push(zone.id);
-          } else {
-            console.log(`⏭️ Skipping notification for ${zone.id} - already notified recently`);
+            triggered.push(zone.id);
           }
         }
       }
 
-      console.log(`✅ Manual check complete. Triggered ${zonesTriggered.length} zones`);
-      return { success: true, zonesTriggered };
+      return { success: true, zonesTriggered: triggered };
     } catch (error) {
-      console.error('❌ Error in manual zone check:', error);
       return { success: false, error: error.message, zonesTriggered: [] };
     }
   },
 
-  // Get all disaster zones (for display)
-  getAllZones: () => {
-    console.log(`📋 Returning ${DISASTER_ZONES.length} total GDACS zones`);
-    return DISASTER_ZONES;
-  },
-
-  // Get zone count
-  getZoneCount: () => {
-    return DISASTER_ZONES.length;
-  },
+  getAllZones: () => DISASTER_ZONES,
+  getZoneCount: () => DISASTER_ZONES.length,
 };
 
-// Check if user is already in any zones on app start.
-// IMPORTANT: Records zones SILENTLY — no notifications sent on startup.
-// Notifications only fire when the user genuinely moves into a new zone after app start.
+// Silently record zones on startup — no notifications, just sets the cooldown
+// so we don't fire entry alerts for zones the user was already inside.
 const checkInitialZones = async (coords) => {
   const { latitude, longitude } = coords;
-  console.log('🔍 Checking initial zones (silent — no notifications on startup):', latitude, longitude);
-
-  let zonesFound = 0;
+  console.log('🔍 Checking initial zones (silent):', latitude, longitude);
+  let found = 0;
 
   for (const zone of DISASTER_ZONES) {
-    const distance = locationService.calculateDistance(latitude, longitude, zone.latitude, zone.longitude);
-    console.log(`📏 Distance to ${zone.id}: ${Math.round(distance)}m (radius: ${zone.radius}m)`);
-
-    if (distance <= zone.radius) {
-      zonesFound++;
-      console.log(`📍 Already in zone on startup (recording silently, no notification): ${zone.id}`);
-
-      // storeEvent (not handleZoneEntry) — records the event to activate cooldown
-      // without sending a push notification
+    const dist = locationService.calculateDistance(latitude, longitude, zone.latitude, zone.longitude);
+    if (dist <= zone.radius) {
+      found++;
+      console.log(`📍 Already inside on startup (silent): ${zone.id}`);
+      // storeEvent with dedup — records zone to activate cooldown, no push sent
       await storeEvent({
         type: 'enter',
         zone: zone.id,
@@ -848,15 +614,14 @@ const checkInitialZones = async (coords) => {
     }
   }
 
-  if (zonesFound === 0) {
-    console.log('✅ Not in any disaster zones on startup');
-  } else {
-    console.log(`📍 Recorded ${zonesFound} pre-existing zones silently on startup`);
-  }
+  console.log(found === 0
+    ? '✅ Not in any zones on startup'
+    : `📍 Recorded ${found} startup zones silently`
+  );
 
-  // Enable exit notifications after initial geofencing events settle
+  // Enable exit notifications after geofencing events settle
   setTimeout(() => {
     isInitialAppLoad = false;
-    console.log('✅ Initial app load complete — exit notifications now enabled');
+    console.log('✅ Initial load complete — exit notifications enabled');
   }, 5000);
 };

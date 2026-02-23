@@ -23,14 +23,30 @@ export const AppProvider = ({ children }) => {
   const [completedTasks, setCompletedTasks] = useState([]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser);
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          const { getFirestore, doc, getDoc } = await import('firebase/firestore');
+          const db = getFirestore();
+          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+          let displayName = firebaseUser.displayName;
+          if (userDoc.exists()) {
+            const data = userDoc.data();
+            displayName = data.name || firebaseUser.displayName || firebaseUser.email;
+          }
+          setUser({ ...firebaseUser, displayName });
+          await loadUserPoints(firebaseUser.uid);
+          await loadCompletedTasks(firebaseUser.uid);
+        } catch (err) {
+          setUser(firebaseUser);
+        }
+      } else {
+        setUser(null);
+        setUserPoints(0);
+        setCompletedTasks([]);
+      }
       setLoading(false);
     });
-
-    loadUserPoints();
-    loadCompletedTasks();
-
     return unsubscribe;
   }, []);
 
@@ -42,31 +58,35 @@ export const AppProvider = ({ children }) => {
     setAlerts([]);
   };
 
-  const loadUserPoints = async () => {
-    const result = await storageService.getUserPoints();
-    if (result.success && result.data) {
+  const loadUserPoints = async (uid) => {
+    if (!uid) return;
+    const result = await storageService.getUserPoints(uid);
+    if (result.success) {
       setUserPoints(result.data);
     }
   };
 
-  const updatePoints = async (points) => {
+  const updatePoints = async (points, uid) => {
+    if (!uid) return;
     const newPoints = userPoints + points;
     setUserPoints(newPoints);
-    await storageService.saveUserPoints(newPoints);
+    await storageService.saveUserPoints(newPoints, uid);
   };
 
-  const loadCompletedTasks = async () => {
-    const result = await storageService.getCompletedTasks();
-    if (result.success && result.data) {
+  const loadCompletedTasks = async (uid) => {
+    if (!uid) return;
+    const result = await storageService.getCompletedTasks(uid);
+    if (result.success) {
       setCompletedTasks(result.data);
     }
   };
 
-  const markTaskComplete = async (taskId) => {
+  const markTaskComplete = async (taskId, uid) => {
+    if (!uid) return;
     if (!completedTasks.includes(taskId)) {
       const updated = [...completedTasks, taskId];
       setCompletedTasks(updated);
-      await storageService.saveCompletedTasks(updated);
+      await storageService.saveCompletedTasks(updated, uid);
     }
   };
 
@@ -82,9 +102,9 @@ export const AppProvider = ({ children }) => {
     currentLocation,
     setCurrentLocation,
     userPoints,
-    updatePoints,
+    updatePoints: (points) => updatePoints(points, user?.uid),
     completedTasks,
-    markTaskComplete,
+    markTaskComplete: (taskId) => markTaskComplete(taskId, user?.uid),
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

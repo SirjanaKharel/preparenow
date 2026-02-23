@@ -62,39 +62,36 @@ export const storageService = {
   },
 
   // Save user points
-  saveUserPoints: async (points) => {
+  saveUserPoints: async (points, uid) => {
     try {
-      await AsyncStorage.setItem('user_points', JSON.stringify(points));
+      await AsyncStorage.setItem(`user_points_${uid}`, JSON.stringify(points));
       return { success: true };
     } catch (error) {
       return { success: false, error: error.message };
     }
   },
 
-  // Get user points
-  getUserPoints: async () => {
+  getUserPoints: async (uid) => {
     try {
-      const data = await AsyncStorage.getItem('user_points');
+      const data = await AsyncStorage.getItem(`user_points_${uid}`);
       return { success: true, data: data ? JSON.parse(data) : 0 };
     } catch (error) {
       return { success: false, error: error.message };
     }
   },
 
-  // Save completed tasks
-  saveCompletedTasks: async (tasks) => {
+  saveCompletedTasks: async (tasks, uid) => {
     try {
-      await AsyncStorage.setItem('completed_tasks', JSON.stringify(tasks));
+      await AsyncStorage.setItem(`completed_tasks_${uid}`, JSON.stringify(tasks));
       return { success: true };
     } catch (error) {
       return { success: false, error: error.message };
     }
   },
 
-  // Get completed tasks
-  getCompletedTasks: async () => {
+  getCompletedTasks: async (uid) => {
     try {
-      const data = await AsyncStorage.getItem('completed_tasks');
+      const data = await AsyncStorage.getItem(`completed_tasks_${uid}`);
       return { success: true, data: data ? JSON.parse(data) : [] };
     } catch (error) {
       return { success: false, error: error.message };
