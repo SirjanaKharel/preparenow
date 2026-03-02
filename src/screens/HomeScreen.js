@@ -29,9 +29,9 @@ const EMERGENCY_CONTACTS = [
 ];
 
 const SEVERITY_CONFIG = {
-  HIGH:   { color: '#DC2626', label: 'HIGH'   },
-  MEDIUM: { color: '#F59E0B', label: 'MED'    },
-  LOW:    { color: '#10B981', label: 'LOW'    },
+  HIGH:   { color: '#DC2626', label: 'HIGH' },
+  MEDIUM: { color: '#F59E0B', label: 'MED'  },
+  LOW:    { color: '#10B981', label: 'LOW'  },
 };
 
 const ZONE_RADIUS_KM = 5;
@@ -219,6 +219,9 @@ export default function HomeScreen({ navigation }) {
       ]
     );
   };
+
+  // ── FIXED: onRefresh now has its proper async function declaration ──
+  const onRefresh = async () => {
     setRefreshing(true);
     await Promise.all([loadLocation(), checkZonesAndUpdate()]);
     setRefreshing(false);
@@ -317,10 +320,10 @@ export default function HomeScreen({ navigation }) {
           <Text style={styles.sectionLabel}>QUICK ACTIONS</Text>
           <View style={styles.actionsGrid}>
             {[
-              { label: 'Find Shelter',        screen: 'Plan'    },
-              { label: 'View Alerts',         screen: 'Alerts'  },
-              { label: 'Emergency Contacts',  screen: 'Plan'    },
-              { label: 'My Tasks',            screen: 'Prepare' },
+              { label: 'Find Shelter',       screen: 'Plan'    },
+              { label: 'View Alerts',        screen: 'Alerts'  },
+              { label: 'Meeting Points', screen: 'Plan'    },
+              { label: 'My Tasks',           screen: 'Prepare' },
             ].map(item => (
               <TouchableOpacity
                 key={item.label}
@@ -355,7 +358,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F5F5F0' },
   scroll:    { paddingBottom: 20 },
 
-  // Header — dark, matches all other screens
+  // Header
   header: {
     backgroundColor: '#111827',
     paddingHorizontal: SPACING.lg,
@@ -388,22 +391,17 @@ const styles = StyleSheet.create({
   emptyHint:     { fontSize: 13, color: '#9CA3AF', paddingVertical: SPACING.sm },
 
   // Preparedness
-  prepRow:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm },
-  prepPct:    { fontSize: 44, fontWeight: '800', color: '#111827', lineHeight: 48 },
-  prepMeta:   { alignItems: 'flex-end', gap: 6 },
-  prepBadge:  { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6 },
+  prepRow:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm },
+  prepPct:       { fontSize: 44, fontWeight: '800', color: '#111827', lineHeight: 48 },
+  prepMeta:      { alignItems: 'flex-end', gap: 6 },
+  prepBadge:     { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6 },
   prepBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  prepCount:  { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
+  prepCount:     { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
   progressTrack: { height: 6, backgroundColor: '#F3F4F6', borderRadius: 3, overflow: 'hidden', marginBottom: SPACING.md },
   progressFill:  { height: '100%', borderRadius: 3 },
 
-  // Dark button — shared style
-  darkBtn: {
-    backgroundColor: '#111827',
-    padding: SPACING.md,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
+  // Dark button
+  darkBtn:     { backgroundColor: '#111827', padding: SPACING.md, borderRadius: 10, alignItems: 'center' },
   darkBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
 
   // Count badge
@@ -420,68 +418,35 @@ const styles = StyleSheet.create({
   countBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   // Alert cards
-  alertCard: {
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    marginBottom: SPACING.sm,
-    overflow: 'hidden',
-    backgroundColor: '#fff',
-  },
-  alertCardInside: { borderColor: '#DC2626', backgroundColor: '#FEF2F2' },
-  insideStripe:    { backgroundColor: '#DC2626', paddingVertical: 5, paddingHorizontal: SPACING.md },
-  insideStripeText:{ color: '#fff', fontWeight: '700', fontSize: 10, letterSpacing: 0.5 },
-  alertCardBody:   { flexDirection: 'row', alignItems: 'center', padding: SPACING.md, gap: SPACING.sm },
-  alertLeft:       { flex: 1 },
-  alertInfo:       {},
-  alertTitle:      { fontSize: 14, fontWeight: '700', color: '#111827' },
-  alertLocation:   { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
-  alertRight:      { alignItems: 'flex-end', gap: 4 },
-  severityBadge:   { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
-  severityText:    { color: '#fff', fontSize: 10, fontWeight: '700' },
-  alertDistance:   { fontSize: 11, color: '#9CA3AF', fontWeight: '600' },
+  alertCard:        { borderRadius: 10, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: SPACING.sm, overflow: 'hidden', backgroundColor: '#fff' },
+  alertCardInside:  { borderColor: '#DC2626', backgroundColor: '#FEF2F2' },
+  insideStripe:     { backgroundColor: '#DC2626', paddingVertical: 5, paddingHorizontal: SPACING.md },
+  insideStripeText: { color: '#fff', fontWeight: '700', fontSize: 10, letterSpacing: 0.5 },
+  alertCardBody:    { flexDirection: 'row', alignItems: 'center', padding: SPACING.md, gap: SPACING.sm },
+  alertLeft:        { flex: 1 },
+  alertInfo:        {},
+  alertTitle:       { fontSize: 14, fontWeight: '700', color: '#111827' },
+  alertLocation:    { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
+  alertRight:       { alignItems: 'flex-end', gap: 4 },
+  severityBadge:    { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  severityText:     { color: '#fff', fontSize: 10, fontWeight: '700' },
+  alertDistance:    { fontSize: 11, color: '#9CA3AF', fontWeight: '600' },
 
   // Monitoring banner
-  monitoringBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F9FAFB',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    padding: SPACING.md,
-    marginTop: SPACING.sm,
-    gap: SPACING.md,
-  },
-  monitoringInfo:    { flex: 1 },
-  monitoringTitle:   { fontSize: 14, fontWeight: '700', color: '#111827' },
-  monitoringSubtitle:{ fontSize: 12, color: '#9CA3AF', marginTop: 2 },
+  monitoringBanner:    { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F9FAFB', borderRadius: 10, borderWidth: 1, borderColor: '#E5E7EB', padding: SPACING.md, marginTop: SPACING.sm, gap: SPACING.md },
+  monitoringInfo:      { flex: 1 },
+  monitoringTitle:     { fontSize: 14, fontWeight: '700', color: '#111827' },
+  monitoringSubtitle:  { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
 
   // Emergency contacts
   contactsRow:   { flexDirection: 'row', gap: SPACING.sm },
-  contactBtn: {
-    flex: 1,
-    backgroundColor: '#111827',
-    borderRadius: 10,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
+  contactBtn:    { flex: 1, backgroundColor: '#111827', borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
   contactNumber: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
   contactLabel:  { fontSize: 9, color: '#9CA3AF', marginTop: 2, fontWeight: '600', letterSpacing: 0.5 },
 
   // Quick actions grid
-  actionsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm },
-  actionBtn: {
-    width: '48%',
-    backgroundColor: '#F9FAFB',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    padding: SPACING.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 52,
-  },
+  actionsGrid:   { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm },
+  actionBtn:     { width: '48%', backgroundColor: '#F9FAFB', borderRadius: 10, borderWidth: 1, borderColor: '#E5E7EB', padding: SPACING.md, alignItems: 'center', justifyContent: 'center', minHeight: 52 },
   actionBtnText: { fontSize: 13, fontWeight: '600', color: '#111827', textAlign: 'center' },
 
   // Footer
