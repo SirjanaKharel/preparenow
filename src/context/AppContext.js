@@ -73,6 +73,8 @@ export const AppProvider = ({ children }) => {
     await storageService.saveUserPoints(newPoints, uid);
   };
 
+
+  // Always load completed tasks from Firestore (with local fallback)
   const loadCompletedTasks = async (uid) => {
     if (!uid) return;
     const result = await storageService.getCompletedTasks(uid);
@@ -81,11 +83,13 @@ export const AppProvider = ({ children }) => {
     }
   };
 
+  // Always save completed tasks to Firestore (with local fallback)
   const markTaskComplete = async (taskId, uid) => {
     if (!uid) return;
     if (!completedTasks.includes(taskId)) {
       const updated = [...completedTasks, taskId];
       setCompletedTasks(updated);
+      // Save to Firestore and local
       await storageService.saveCompletedTasks(updated, uid);
     }
   };

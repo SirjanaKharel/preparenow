@@ -322,7 +322,7 @@ export default function HomeScreen({ navigation }) {
             {[
               { label: 'Find Shelter',       screen: 'Plan'    },
               { label: 'View Alerts',        screen: 'Alerts'  },
-              { label: 'Meeting Points', screen: 'Plan'    },
+              { label: 'Meeting Points',     screen: 'Plan'    },
               { label: 'My Tasks',           screen: 'Prepare' },
             ].map(item => (
               <TouchableOpacity

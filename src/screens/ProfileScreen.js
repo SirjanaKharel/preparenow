@@ -163,7 +163,7 @@ export default function ProfileScreen({ navigation }) {
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Edit Profile</Text>
 
-            <TouchableOpacity style={styles.avatarEditArea} onPress={handlePickImage}>
+            <View style={styles.avatarEditArea}>
               {imageInput ? (
                 <Image source={{ uri: imageInput }} style={styles.modalAvatar} />
               ) : (
@@ -171,8 +171,7 @@ export default function ProfileScreen({ navigation }) {
                   <Text style={styles.modalAvatarInitial}>{nameInput.charAt(0).toUpperCase()}</Text>
                 </View>
               )}
-              <Text style={styles.changePhotoText}>Change Photo</Text>
-            </TouchableOpacity>
+            </View>
 
             <TextInput
               style={styles.input}

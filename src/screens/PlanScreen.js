@@ -18,6 +18,7 @@ import { storageService } from '../services/storageServices';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { shelterService } from '../services/shelterService';
 import { locationService, subscribeToLocationChanges, getDeveloperMode } from '../services/locationService';
+import { useApp } from '../context/AppContext';
 
 // ─── Small reusable components ────────────────────────────────────────────────
 
@@ -35,6 +36,7 @@ const Chip = ({ label, color = '#374151', bg = '#F3F4F6' }) => (
 
 export default function PlanScreen({ navigation }) {
   const mapRef = useRef(null);
+  const { user } = useApp();
 
   // Plan data
   const [familyMembers, setFamilyMembers]       = useState([]);
@@ -72,9 +74,12 @@ export default function PlanScreen({ navigation }) {
   // ─── Init ────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    loadData();
+    if (user?.uid) {
+      loadData(user.uid);
+    }
     fetchLocationAndShelters();
-  }, []);
+    // eslint-disable-next-line
+  }, [user?.uid]);
 
   useEffect(() => {
     const unsub = subscribeToLocationChanges(async (coords) => {
@@ -188,17 +193,26 @@ export default function PlanScreen({ navigation }) {
 
   // ─── Data helpers ─────────────────────────────────────────────────────────
 
-  const loadData = async () => {
-    const [members, primary, secondary, docs] = await Promise.all([
-      storageService.get('family_members'),
-      storageService.get('primary_meeting_point'),
-      storageService.get('secondary_meeting_point'),
-      storageService.get('uploaded_docs'),
-    ]);
-    if (members?.data)  setFamilyMembers(JSON.parse(members.data));
-    if (primary?.data)  setPrimaryMeeting(primary.data);
-    if (secondary?.data) setSecondaryMeeting(secondary.data);
-    if (docs?.data)     setUploadedDocs(JSON.parse(docs.data));
+  const loadData = async (uid) => {
+    const result = await storageService.getSafetyPlan(uid);
+    if (result?.success && result.data) {
+      setFamilyMembers(result.data.familyMembers || []);
+      setPrimaryMeeting(result.data.primaryMeeting || 'Home');
+      setSecondaryMeeting(result.data.secondaryMeeting || '');
+      setUploadedDocs(result.data.uploadedDocs || []);
+    }
+  };
+
+  const savePlan = async (updated = {}) => {
+    if (!user?.uid) return;
+    const plan = {
+      familyMembers,
+      primaryMeeting,
+      secondaryMeeting,
+      uploadedDocs,
+      ...updated,
+    };
+    await storageService.saveSafetyPlan(plan, user.uid);
   };
 
   const addFamilyMember = async () => {
@@ -207,7 +221,7 @@ export default function PlanScreen({ navigation }) {
     setFamilyMembers(updated);
     setNewMember({ name: '', relationship: '' });
     setModal(null);
-    await storageService.set('family_members', JSON.stringify(updated));
+    await savePlan({ familyMembers: updated });
   };
 
   const saveEditMember = async () => {
@@ -216,7 +230,7 @@ export default function PlanScreen({ navigation }) {
     setFamilyMembers(updated);
     setEditMember(null);
     setModal(null);
-    await storageService.set('family_members', JSON.stringify(updated));
+    await savePlan({ familyMembers: updated });
   };
 
   const deleteFamilyMember = (id) => {
@@ -225,7 +239,7 @@ export default function PlanScreen({ navigation }) {
       { text: 'Remove', style: 'destructive', onPress: async () => {
         const updated = familyMembers.filter(m => m.id !== id);
         setFamilyMembers(updated);
-        await storageService.set('family_members', JSON.stringify(updated));
+        await savePlan({ familyMembers: updated });
       }},
     ]);
   };
@@ -235,16 +249,13 @@ export default function PlanScreen({ navigation }) {
     if (!trimmed) return setModal(null);
     if (isPrimary) {
       setPrimaryMeeting(trimmed);
+      await savePlan({ primaryMeeting: trimmed });
     } else {
       setSecondaryMeeting(trimmed);
+      await savePlan({ secondaryMeeting: trimmed });
     }
     setTempLocation('');
     setModal(null);
-    if (isPrimary) {
-      await storageService.set('primary_meeting_point', trimmed);
-    } else {
-      await storageService.set('secondary_meeting_point', trimmed);
-    }
   };
 
   const handlePickDocument = async () => {
@@ -253,7 +264,7 @@ export default function PlanScreen({ navigation }) {
       if (!result.canceled && result.assets) {
         const updated = [...uploadedDocs, ...result.assets];
         setUploadedDocs(updated);
-        await storageService.set('uploaded_docs', JSON.stringify(updated));
+        await savePlan({ uploadedDocs: updated });
       }
     } catch { Alert.alert('Error', 'Could not pick document.'); }
   };
@@ -264,7 +275,7 @@ export default function PlanScreen({ navigation }) {
       { text: 'Remove', style: 'destructive', onPress: async () => {
         const updated = uploadedDocs.filter((_, i) => i !== index);
         setUploadedDocs(updated);
-        await storageService.set('uploaded_docs', JSON.stringify(updated));
+        await savePlan({ uploadedDocs: updated });
       }},
     ]);
   };
