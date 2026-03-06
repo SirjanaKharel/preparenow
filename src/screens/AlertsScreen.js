@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,7 @@ import {
   Pressable,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { locationService } from '../services/locationService';
+import { locationService, subscribeToEventChanges } from '../services/locationService';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../constants/theme';
 import { SAFETY_GUIDES } from '../constants/resources';
 
@@ -67,14 +67,19 @@ const FALLBACK_STEPS = [
 
 const CriticalCard = ({ alert, onViewSteps }) => {
   const cfg = SEVERITY_CONFIG[alert.severity] || SEVERITY_CONFIG.high;
+  // Determine disaster type label
+  const disasterType = resolveDisasterType(alert);
   return (
-    <View style={[styles.criticalCard, { borderColor: cfg.color }]}>
-      <View style={[styles.criticalStripe, { backgroundColor: cfg.color }]}>
+    <View style={[styles.criticalCard, { borderColor: cfg.color }]}> 
+      <View style={[styles.criticalStripe, { backgroundColor: cfg.color }]}> 
         <Text style={styles.criticalStripeText}>ACTIVE ZONE ALERT · {cfg.label}</Text>
         <Text style={styles.criticalStripeTime}>{alert.time}</Text>
       </View>
-      <View style={styles.criticalBody}>
+      <View style={styles.criticalBody}> 
         <Text style={styles.criticalTitle} numberOfLines={2}>{alert.title}</Text>
+        {disasterType && (
+          <Text style={styles.criticalType}>{disasterType.charAt(0).toUpperCase() + disasterType.slice(1)}</Text>
+        )}
         {!!alert.description && (
           <Text style={styles.criticalDesc}>{alert.description}</Text>
         )}
@@ -96,6 +101,10 @@ const RecentRow = ({ alert }) => (
     <Text style={[styles.recentTitle, alert.isExit && styles.recentTitleExit]} numberOfLines={1}>
       {alert.title}
     </Text>
+    {/* Show disaster type if available */}
+    {alert.disasterType && (
+      <Text style={styles.recentType}>{alert.disasterType.charAt(0).toUpperCase() + alert.disasterType.slice(1)}</Text>
+    )}
     <Text style={styles.recentTime}>{alert.time}</Text>
   </View>
 );
@@ -145,6 +154,16 @@ export default function AlertsScreen({ navigation }) {
     if (criticalRes.success) setCriticalAlerts(criticalRes.alerts);
   }, []);
 
+  // Subscribe to immediate event notifications from locationService.
+  // Whenever storeEvent() writes a new entry/exit, this fires loadData()
+  // right away — no need to wait for the 10s poll.
+  useEffect(() => {
+    const unsubscribe = subscribeToEventChanges(() => {
+      loadData();
+    });
+    return unsubscribe;
+  }, [loadData]);
+
   useFocusEffect(
     useCallback(() => {
       loadData();
@@ -167,27 +186,49 @@ export default function AlertsScreen({ navigation }) {
     const seenTitles = new Set();
     const fromEvents = events
       .filter(e => e.type === 'enter' && ['critical', 'high'].includes(e.severity) && activeZoneIds.has(e.zone))
-      .map(e => ({ id: `event-${e.timestamp}`, severity: e.severity, title: e.title || 'Alert', description: e.description || '', time: getTimeAgo(e.timestamp), timestamp: e.timestamp, disasterType: e.disasterType }));
+      .map(e => ({
+        id: `event-${e.timestamp}`,
+        severity: e.severity,
+        title: e.title || 'Alert',
+        description: e.description || '',
+        time: getTimeAgo(e.timestamp),
+        timestamp: e.timestamp,
+        disasterType: e.disasterType,
+      }));
     const fromFirestore = criticalAlerts
       .filter(a => activeZoneIds.has(a.zoneId))
-      .map(a => ({ id: a.id, severity: a.severity, title: a.title, description: a.description || '', time: getTimeAgo(a.timestamp), timestamp: a.timestamp, disasterType: a.disasterType }));
+      .map(a => ({
+        id: a.id,
+        severity: a.severity,
+        title: a.title,
+        description: a.description || '',
+        time: getTimeAgo(a.timestamp),
+        timestamp: a.timestamp,
+        disasterType: a.disasterType,
+      }));
     return [...fromEvents, ...fromFirestore]
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
       .filter(a => { if (seenTitles.has(a.title)) return false; seenTitles.add(a.title); return true; });
   })();
 
   const displayRecent = (() => {
-    const fiveMinAgo = Date.now() - 5 * 60 * 1000;
     const seenKeys = new Set();
     return events
-      .filter(e => {
-        if (new Date(e.timestamp).getTime() < fiveMinAgo) return false;
-        return e.type === 'enter' ? activeZoneIds.has(e.zone) : e.type === 'exit';
-      })
+      .filter(e => e.type === 'enter' || e.type === 'exit')
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-      .filter(e => { const k = `${e.type}-${e.zone}`; if (seenKeys.has(k)) return false; seenKeys.add(k); return true; })
+      .filter(e => {
+        const k = `${e.type}-${e.zone}-${e.timestamp}`;
+        if (seenKeys.has(k)) return false;
+        seenKeys.add(k);
+        return true;
+      })
       .slice(0, 5)
-      .map(e => ({ id: `event-${e.timestamp}`, title: e.type === 'exit' ? `Left ${e.title}` : `Entered ${e.title}`, time: getTimeAgo(e.timestamp), isExit: e.type === 'exit' }));
+      .map(e => ({
+        id:     `event-${e.timestamp}`,
+        title:  e.type === 'exit' ? `Left ${e.title}` : `Entered ${e.title}`,
+        time:   getTimeAgo(e.timestamp),
+        isExit: e.type === 'exit',
+      }));
   })();
 
   const openSafetyModal = (alert) => {
@@ -295,10 +336,11 @@ export default function AlertsScreen({ navigation }) {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  criticalType: { fontSize: 13, color: '#DC2626', fontWeight: '600', marginBottom: 2 },
+  recentType:   { fontSize: 11, color: '#6B7280', fontStyle: 'italic', marginLeft: 6 },
   container: { flex: 1, backgroundColor: '#F5F5F0' },
   scroll:    { paddingBottom: 20 },
 
-  // Header
   header: {
     backgroundColor: '#111827',
     paddingHorizontal: SPACING.lg,
@@ -308,7 +350,6 @@ const styles = StyleSheet.create({
   appLabel:  { fontSize: 10, fontWeight: '700', color: '#6B7280', letterSpacing: 2, marginBottom: 6 },
   pageTitle: { fontSize: 28, fontWeight: '800', color: '#FFFFFF' },
 
-  // Card
   card: {
     backgroundColor: '#FFFFFF',
     marginHorizontal: SPACING.md,
@@ -328,11 +369,9 @@ const styles = StyleSheet.create({
   sectionSub:    { fontSize: 11, color: '#9CA3AF' },
   emptyHint:     { fontSize: 13, color: '#9CA3AF', paddingVertical: SPACING.sm },
 
-  // Count badge
-  countBadge: { backgroundColor: '#DC2626', borderRadius: 10, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
+  countBadge:     { backgroundColor: '#DC2626', borderRadius: 10, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
   countBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
-  // Critical cards
   criticalCard: {
     borderRadius: 10,
     borderWidth: 1.5,
@@ -350,7 +389,6 @@ const styles = StyleSheet.create({
   stepsBtnText:       { color: '#fff', fontWeight: '700', fontSize: 13 },
   moreText:           { fontSize: 12, color: '#EA580C', fontWeight: '600', paddingVertical: 4 },
 
-  // Recent rows
   recentRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -369,7 +407,6 @@ const styles = StyleSheet.create({
   showMoreBtn:  { paddingVertical: SPACING.sm, alignItems: 'center' },
   showMoreText: { color: '#2563EB', fontWeight: '600', fontSize: 13 },
 
-  // Info banner
   infoBanner: {
     marginHorizontal: SPACING.md,
     marginTop: SPACING.sm,
@@ -381,7 +418,6 @@ const styles = StyleSheet.create({
   },
   infoBannerText: { fontSize: 12, color: '#9CA3AF', textAlign: 'center' },
 
-  // Safety modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalSheet: {
     backgroundColor: '#fff',
@@ -401,7 +437,6 @@ const styles = StyleSheet.create({
   modalCloseBtn:     { backgroundColor: '#111827', padding: SPACING.md, borderRadius: 10, alignItems: 'center' },
   modalCloseBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
 
-  // Footer
   footer: {
     flexDirection: 'row',
     backgroundColor: '#FFFFFF',

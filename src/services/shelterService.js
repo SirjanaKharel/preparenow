@@ -5,44 +5,14 @@
  * worldwide using the OpenStreetMap Overpass API (free, no key required),
  * then caches results in Firebase Firestore for offline use.
  *
- * Tag strategy — only OSM tags that explicitly indicate a building is
- * designated or used as an emergency/disaster shelter:
- *
- *   PRIMARY (dedicated emergency shelters):
- *   • amenity=social_facility + social_facility=shelter
- *       – Facilities whose PRIMARY purpose is sheltering people in need.
- *         The canonical OSM tag for permanent emergency shelters.
- *
- *   • emergency:social_facility=shelter
- *       – Used across Japan, Taiwan & Philippines to tag buildings
- *         (schools, community centres, etc.) officially designated by
- *         government as evacuation/disaster shelters.
- *
- *   • emergency:social_facility=displaced_people
- *       – Philippine / Taiwan import tag for shelters specifically for
- *         displaced people after disasters.
- *
- *   ASSEMBLY & EVACUATION (internationally recognised):
- *   • amenity=assembly_point / emergency=assembly_point
- *       – Officially designated safe assembly/muster points.
- *
- *   EXPLICITLY TAGGED DISASTER SHELTERS:
- *   • disaster=shelter
- *   • emergency=shelter
- *
- * What is intentionally EXCLUDED:
- *   – Generic schools, churches, sports centres, community centres, stadiums
- *     (unless they carry one of the specific emergency tags above)
- *   – amenity=shelter alone (covers bus shelters, picnic shelters, etc.)
- *
- * Coverage note:
- *   These specific tags are densest in Japan, Taiwan, Philippines, parts of
- *   the US, and some European countries. For sparse areas the service returns
- *   coverage='limited' or 'none' and the UI prompts users to contact local
- *   emergency services.
- *
- * Return value:
- *   { shelters: Array, coverage: 'good'|'limited'|'none', fromCache: boolean }
+ * Fixes applied:
+ *   - In-flight deduplication: concurrent calls for the same location share
+ *     one Overpass request instead of firing N identical ones.
+ *   - Exponential backoff with jitter on 429 / 5xx responses (3 attempts).
+ *   - Alternate Overpass mirrors tried in round-robin on failure.
+ *   - Minimum 2-second gap between successive Overpass requests.
+ *   - HTML response detection: rotates mirror instead of crashing JSON parser.
+ *   - Firestore permission errors silently fall through to live Overpass fetch.
  */
 
 import {
@@ -58,40 +28,44 @@ import { db } from '../config/firebase';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
-const OVERPASS_ENDPOINT    = 'https://overpass-api.de/api/interpreter';
-const CACHE_TTL_HOURS      = 24;    // re-fetch from OSM every 24 hours
-const SEARCH_RADIUS_M      = 20000; // 20 km radius
-const MAX_RESULTS          = 100;   // higher cap — official shelters are sparse
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+];
+
+const CACHE_TTL_HOURS      = 24;
+const SEARCH_RADIUS_M      = 20000;
+const MAX_RESULTS          = 100;
 const FIRESTORE_COLLECTION = 'shelters';
+const MIN_REQUEST_GAP_MS   = 2000;
+const MAX_RETRIES          = 3;
 
-// Coverage quality thresholds (lower bar than before — these are official shelters)
-const COVERAGE_GOOD_THRESHOLD    = 5; // >=5 official shelters → 'good'
-const COVERAGE_LIMITED_THRESHOLD = 1; // 1–4 → 'limited', 0 → 'none'
+const COVERAGE_GOOD_THRESHOLD    = 5;
+const COVERAGE_LIMITED_THRESHOLD = 1;
 
-// ─── OSM filter definitions ─────────────────────────────────────────────────
-//
-// Each entry is either:
-//   { key, value }         → single tag (node/way has key=value)
-//   { key, value, extra }  → two-tag match (node/way must also have extra.key=extra.value)
+// ─── Rate-limit state ──────────────────────────────────────────────────────
+
+let lastRequestTime = 0;
+let endpointIndex   = 0;
+
+// In-flight request cache: cellKey → Promise
+const inFlightRequests = new Map();
+
+// ─── OSM filter definitions ────────────────────────────────────────────────
 
 const SHELTER_FILTERS = [
-  // Dedicated emergency shelter — primary purpose
   {
     key: 'amenity', value: 'social_facility',
     extra: { key: 'social_facility', value: 'shelter' },
   },
-  // Japan / Taiwan / Philippines government-designated evacuation shelters
-  { key: 'emergency:social_facility', value: 'shelter' },
+  { key: 'emergency:social_facility', value: 'shelter'          },
   { key: 'emergency:social_facility', value: 'displaced_people' },
-  // Explicit disaster / emergency shelter tags
   { key: 'disaster',  value: 'shelter' },
   { key: 'emergency', value: 'shelter' },
 ];
 
-// No type labels shown in the shelter list
-const TYPE_LABELS = {};
-
-// ─── Coverage classifier ───────────────────────────────────────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────────
 
 const getCoverage = (count) => {
   if (count >= COVERAGE_GOOD_THRESHOLD)    return 'good';
@@ -99,18 +73,22 @@ const getCoverage = (count) => {
   return 'none';
 };
 
+const sleep  = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const jitter = (ms) => ms + Math.random() * ms * 0.3;
+
+const cellKey = (lat, lon) =>
+  `${Math.round(lat * 100) / 100}_${Math.round(lon * 100) / 100}`;
+
 // ─── Overpass query builder ────────────────────────────────────────────────
 
 const buildOverpassQuery = (lat, lon, radiusM) => {
   const around = `(around:${radiusM},${lat},${lon})`;
-
   const lines = SHELTER_FILTERS.flatMap(({ key, value, extra }) => {
     const selector = extra
       ? `["${key}"="${value}"]["${extra.key}"="${extra.value}"]${around}`
       : `["${key}"="${value}"]${around}`;
     return [`node${selector};`, `way${selector};`];
   });
-
   return `
 [out:json][timeout:30];
 (
@@ -128,11 +106,6 @@ const parseElement = (el) => {
   const longitude = el.lon  ?? el.center?.lon;
   if (!latitude || !longitude) return null;
 
-  // Determine best type label (most specific tag wins)
-  // Remove all type labels
-  let typeLabel = null;
-
-  // Disaster-specific capacity tags (used in Japanese / Taiwanese datasets)
   const disasterTypes = [
     tags['emergency:shelter:flood']      === 'yes' && 'Flood',
     tags['emergency:shelter:earthquake'] === 'yes' && 'Earthquake',
@@ -156,8 +129,8 @@ const parseElement = (el) => {
     id:            `osm_${el.type}_${el.id}`,
     osmId:         el.id,
     osmType:       el.type,
-    name:          tags.name || tags['name:en'] || typeLabel,
-    type:          typeLabel,
+    name:          tags.name || tags['name:en'] || null,
+    type:          null,
     address:       addrParts.length > 0 ? addrParts.join(', ') : null,
     latitude,
     longitude,
@@ -172,9 +145,6 @@ const parseElement = (el) => {
 };
 
 // ─── Firestore cache ───────────────────────────────────────────────────────
-
-const cellKey = (lat, lon) =>
-  `${Math.round(lat * 100) / 100}_${Math.round(lon * 100) / 100}`;
 
 const getCachedShelters = async (lat, lon) => {
   try {
@@ -197,7 +167,8 @@ const getCachedShelters = async (lat, lon) => {
     console.log(`✅ Cache hit: ${shelters.length} disaster shelters`);
     return shelters;
   } catch (err) {
-    console.warn('⚠️ Firestore cache read failed:', err.message);
+    // Permissions error or offline — skip cache silently, go straight to Overpass
+    console.warn('⚠️ Firestore cache unavailable, fetching live:', err.message);
     return null;
   }
 };
@@ -222,46 +193,95 @@ const cacheShelters = async (lat, lon, shelters) => {
     }
     console.log(`✅ Cached ${shelters.length} disaster shelters (key: ${key})`);
   } catch (err) {
-    console.warn('⚠️ Firestore cache write failed:', err.message);
+    // Don't let cache failures block the UI — shelters already returned to caller
+    console.warn('⚠️ Firestore cache write skipped:', err.message);
   }
 };
 
-// ─── Overpass live fetch ───────────────────────────────────────────────────
+// ─── Overpass fetch with backoff, endpoint rotation, HTML detection ────────
 
 const fetchFromOverpass = async (lat, lon) => {
-  const url = `${OVERPASS_ENDPOINT}?data=${encodeURIComponent(
-    buildOverpassQuery(lat, lon, SEARCH_RADIUS_M)
-  )}`;
+  const queryStr = buildOverpassQuery(lat, lon, SEARCH_RADIUS_M);
+  let lastError;
 
-  console.log(`🌐 Querying Overpass for disaster shelters near (${lat.toFixed(4)}, ${lon.toFixed(4)})…`);
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    // Enforce minimum gap between requests
+    const gap = Date.now() - lastRequestTime;
+    if (gap < MIN_REQUEST_GAP_MS) {
+      await sleep(MIN_REQUEST_GAP_MS - gap);
+    }
 
-  const response = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!response.ok) {
-    throw new Error(`Overpass API error: ${response.status} ${response.statusText}`);
+    const endpoint = OVERPASS_ENDPOINTS[endpointIndex % OVERPASS_ENDPOINTS.length];
+    const url = `${endpoint}?data=${encodeURIComponent(queryStr)}`;
+
+    console.log(
+      `🌐 Overpass attempt ${attempt + 1}/${MAX_RETRIES} via ${endpoint} ` +
+      `(${lat.toFixed(4)}, ${lon.toFixed(4)})…`
+    );
+
+    try {
+      lastRequestTime = Date.now();
+      const response = await fetch(url, { headers: { Accept: 'application/json' } });
+
+      // Rate-limited or server error — backoff and rotate mirror
+      if (response.status === 429 || response.status >= 500) {
+        const backoff = jitter(1000 * 2 ** attempt);
+        console.warn(`⚠️ Overpass ${response.status} — retrying in ${Math.round(backoff)}ms`);
+        endpointIndex++;
+        lastError = new Error(`Overpass API error: ${response.status}`);
+        await sleep(backoff);
+        continue;
+      }
+
+      if (!response.ok) {
+        throw new Error(`Overpass API error: ${response.status} ${response.statusText}`);
+      }
+
+      // Detect HTML error pages before attempting JSON parse
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json') && !contentType.includes('text/json')) {
+        const backoff = jitter(1000 * 2 ** attempt);
+        console.warn(`⚠️ Overpass returned non-JSON (${contentType}) — rotating mirror, retrying in ${Math.round(backoff)}ms`);
+        endpointIndex++;
+        lastError = new Error('Overpass returned non-JSON response');
+        await sleep(backoff);
+        continue;
+      }
+
+      const elements = (await response.json()).elements || [];
+      console.log(`📦 Overpass returned ${elements.length} raw elements`);
+
+      const seen     = new Set();
+      const shelters = [];
+      for (const el of elements) {
+        const parsed = parseElement(el);
+        if (
+          !parsed             ||
+          seen.has(parsed.id) ||
+          !parsed.latitude    ||
+          !parsed.longitude   ||
+          !parsed.name        ||
+          !parsed.address
+        ) continue;
+        seen.add(parsed.id);
+        shelters.push(parsed);
+      }
+
+      console.log(`✅ Parsed ${shelters.length} unique disaster shelters`);
+      return shelters;
+
+    } catch (err) {
+      lastError = err;
+      if (attempt < MAX_RETRIES - 1) {
+        const backoff = jitter(1000 * 2 ** attempt);
+        console.warn(`⚠️ Overpass fetch error — retrying in ${Math.round(backoff)}ms:`, err.message);
+        endpointIndex++;
+        await sleep(backoff);
+      }
+    }
   }
 
-  const elements = (await response.json()).elements || [];
-  console.log(`📦 Overpass returned ${elements.length} raw elements`);
-
-  const seen     = new Set();
-  const shelters = [];
-  for (const el of elements) {
-    const parsed = parseElement(el);
-    // Only keep shelters with complete and correct data
-    if (
-      !parsed ||
-      seen.has(parsed.id) ||
-      !parsed.latitude ||
-      !parsed.longitude ||
-      !parsed.name ||
-      !parsed.address
-    ) continue;
-    seen.add(parsed.id);
-    shelters.push(parsed);
-  }
-
-  console.log(`✅ Parsed ${shelters.length} unique disaster shelters`);
-  return shelters;
+  throw lastError || new Error('Overpass fetch failed after retries');
 };
 
 // ─── Public API ────────────────────────────────────────────────────────────
@@ -269,24 +289,36 @@ const fetchFromOverpass = async (lat, lon) => {
 export const shelterService = {
   /**
    * Get officially designated disaster/emergency shelters near (lat, lon).
-   * Works globally. Checks Firestore cache first; falls back to Overpass.
-   *
-   * @param {number} lat
-   * @param {number} lon
-   * @param {{ forceRefresh?: boolean }} options
-   * @returns {Promise<{ shelters: Array, coverage: 'good'|'limited'|'none', fromCache: boolean }>}
+   * Concurrent calls for the same location share a single in-flight request.
+   * Firestore permission errors are handled gracefully — falls back to Overpass.
    */
   getNearbyShelters: async (lat, lon, { forceRefresh = false } = {}) => {
     try {
+      // Check Firestore cache first (unless force-refreshing)
       if (!forceRefresh) {
         const cached = await getCachedShelters(lat, lon);
         if (cached) {
           return { shelters: cached, coverage: getCoverage(cached.length), fromCache: true };
         }
       }
-      const shelters = await fetchFromOverpass(lat, lon);
+
+      // Deduplicate in-flight requests for the same cell
+      const key = cellKey(lat, lon);
+      if (inFlightRequests.has(key)) {
+        console.log(`⏳ Reusing in-flight Overpass request for ${key}`);
+        const shelters = await inFlightRequests.get(key);
+        return { shelters, coverage: getCoverage(shelters.length), fromCache: false };
+      }
+
+      const promise = fetchFromOverpass(lat, lon).finally(() => {
+        inFlightRequests.delete(key);
+      });
+      inFlightRequests.set(key, promise);
+
+      const shelters = await promise;
       cacheShelters(lat, lon, shelters).catch(() => {});
       return { shelters, coverage: getCoverage(shelters.length), fromCache: false };
+
     } catch (err) {
       console.error('❌ shelterService.getNearbyShelters error:', err);
       return { shelters: [], coverage: 'none', fromCache: false };

@@ -86,11 +86,17 @@ const AlertCard = ({ alert }) => {
         <View style={styles.alertLeft}>
           <View style={styles.alertInfo}>
             <Text style={styles.alertTitle} numberOfLines={1}>{alert.type}</Text>
+            {/* Show disaster type if available */}
+            {alert.disasterType && (
+              <Text style={styles.criticalType}>
+                {alert.disasterType.charAt(0).toUpperCase() + alert.disasterType.slice(1)}
+              </Text>
+            )}
             <Text style={styles.alertLocation} numberOfLines={1}>{alert.location}</Text>
           </View>
         </View>
         <View style={styles.alertRight}>
-          <View style={[styles.severityBadge, { backgroundColor: cfg.color || '#374151' }]}>
+          <View style={[styles.severityBadge, { backgroundColor: cfg.color || '#374151' }]}> 
             <Text style={styles.severityText}>{cfg.label || alert.severity}</Text>
           </View>
           <Text style={styles.alertDistance}>
@@ -355,6 +361,8 @@ export default function HomeScreen({ navigation }) {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  // ...existing code...
+  criticalType: { fontSize: 13, color: '#DC2626', fontWeight: '600', marginBottom: 2 },
   container: { flex: 1, backgroundColor: '#F5F5F0' },
   scroll:    { paddingBottom: 20 },
 

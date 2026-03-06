@@ -15,9 +15,9 @@ import { useApp } from '../context/AppContext';
 
 export default function DeveloperSettingsScreen({ navigation }) {
   const { setCurrentLocation } = useApp();
-  const [devMode, setDevMode] = useState(false);
-  const [testLat, setTestLat] = useState('52.9225');
-  const [testLon, setTestLon] = useState('-1.4746');
+  const [devMode,  setDevMode]  = useState(false);
+  const [testLat,  setTestLat]  = useState('52.9225');
+  const [testLon,  setTestLon]  = useState('-1.4746');
   const [checking, setChecking] = useState(false);
 
   // Restore state if dev mode was already active
@@ -48,10 +48,8 @@ export default function DeveloperSettingsScreen({ navigation }) {
     }
 
     setChecking(true);
-
-    // This now triggers immediate zone check + notifies HomeScreen
+    // setDeveloperMode now always passes force:true internally — no guard bypass needed here
     await setDeveloperMode(true, { latitude: parsedLat, longitude: parsedLon });
-
     setChecking(false);
     return true;
   };
@@ -64,10 +62,9 @@ export default function DeveloperSettingsScreen({ navigation }) {
     } else {
       setDevMode(false);
       await setDeveloperMode(false);
-      // Automatically set user's real location when dev mode is turned off
       try {
         const result = await locationService.getCurrentLocation();
-        if (result.success && result.location && result.location.coords) {
+        if (result.success && result.location?.coords) {
           setCurrentLocation(result.location.coords);
         }
       } catch (e) {
@@ -81,6 +78,24 @@ export default function DeveloperSettingsScreen({ navigation }) {
     await applyLocation(testLat, testLon);
   };
 
+  const handleClearHistory = () => {
+    Alert.alert(
+      'Clear Event History',
+      'Removes all stored zone enter/exit events. Use this if notifications or Recent Activity are blocked by the 10-minute cooldown.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            await locationService.clearEventHistory();
+            Alert.alert('✅ Cleared', 'Event history cleared. Zone checks will fire fresh.');
+          },
+        },
+      ]
+    );
+  };
+
   const handleUseNearestZone = async () => {
     setChecking(true);
     try {
@@ -91,7 +106,6 @@ export default function DeveloperSettingsScreen({ navigation }) {
         return;
       }
 
-      // Sort by distance from current test location
       const lat = parseFloat(testLat) || 0;
       const lon = parseFloat(testLon) || 0;
 
@@ -128,16 +142,12 @@ export default function DeveloperSettingsScreen({ navigation }) {
     setChecking(false);
   };
 
-  // Cleaned up Developer Settings page: only essential controls, clear layout, and concise quick test zones
   const TEST_ZONES = [
-    { name: 'Lewotobi (Indonesia, Fire)', lat: -8.542, lon: 122.775 },
-    { name: 'Fuego (Guatemala, Fire)', lat: 14.473, lon: -90.88 },
-    { name: 'Kanlaon (Philippines, Fire)', lat: 10.412, lon: 123.132 },
-    { name: 'JUDE-25 (Mozambique/Madagascar, Storm)', lat: -26.04, lon: 51.93 },
-    { name: 'ERICK-25 (Mexico, Storm)', lat: 18, lon: -100.8 },
-    { name: 'South America-2023 (Brazil, Flood)', lat: -6.88, lon: -50.349 },
-    { name: 'WF Event (Greece, Fire)', lat: 35.037926159239646, lon: 25.86402035475441 },
-    { name: 'WF Event (Albania, Fire)', lat: 40.249995058168885, lon: 19.58966211499156 },
+    { name: 'Kanlaon (Philippines, Fire)',            lat: 10.412,                lon: 123.132              },
+    { name: 'JUDE-25 (Mozambique/Madagascar, Storm)', lat: -26.04,               lon: 51.93                },
+    { name: 'ERICK-25 (Mexico, Storm)',               lat: 18,                   lon: -100.8               },
+    { name: 'WF Event (Greece, Fire)',                lat: 35.037926159239646,   lon: 25.86402035475441    },
+    { name: 'WF Event (Albania, Fire)',               lat: 40.249995058168885,   lon: 19.58966211499156    },
   ];
 
   return (
@@ -166,7 +176,7 @@ export default function DeveloperSettingsScreen({ navigation }) {
       {/* Coordinates Input */}
       {devMode && (
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Test Coordinates</Text>
+          <Text style={styles.sectionTitle}>TEST COORDINATES</Text>
           <Text style={styles.inputLabel}>Latitude</Text>
           <TextInput
             style={styles.input}
@@ -184,21 +194,22 @@ export default function DeveloperSettingsScreen({ navigation }) {
             keyboardType="numeric"
           />
           <Text style={styles.inputLabel}>Quick Test Zones</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 }}>
+          <View style={styles.quickZonesRow}>
             {TEST_ZONES.map(zone => (
               <TouchableOpacity
                 key={zone.name}
-                style={{ backgroundColor: '#eee', padding: 8, borderRadius: 8, margin: 4 }}
+                style={styles.quickZoneBtn}
                 onPress={() => {
                   setTestLat(zone.lat.toString());
                   setTestLon(zone.lon.toString());
-                  handleUpdateLocation();
+                  applyLocation(zone.lat.toString(), zone.lon.toString());
                 }}
               >
-                <Text style={{ color: '#333', fontWeight: '600' }}>{zone.name}</Text>
+                <Text style={styles.quickZoneBtnText}>{zone.name}</Text>
               </TouchableOpacity>
             ))}
           </View>
+
           <TouchableOpacity
             style={styles.primaryButton}
             onPress={handleUpdateLocation}
@@ -210,10 +221,27 @@ export default function DeveloperSettingsScreen({ navigation }) {
               <Text style={styles.primaryButtonText}>Apply Location</Text>
             )}
           </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={handleUseNearestZone}
+            disabled={checking}
+          >
+            <Text style={styles.secondaryButtonText}>Use Nearest Zone</Text>
+          </TouchableOpacity>
         </View>
       )}
 
-      // ...existing code...
+      {/* Diagnostics — always visible */}
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>DIAGNOSTICS</Text>
+        <TouchableOpacity style={styles.dangerButton} onPress={handleClearHistory}>
+          <Text style={styles.dangerButtonText}>Clear Event History</Text>
+        </TouchableOpacity>
+        <Text style={styles.hintText}>
+          Clears all stored zone enter/exit events. Use if Recent Activity is stale or zone notifications are blocked by the 10-minute cooldown.
+        </Text>
+      </View>
     </ScrollView>
   );
 }
@@ -245,7 +273,7 @@ const styles = StyleSheet.create({
   titleContainer: {
     flex: 1,
     alignItems: 'center',
-    marginRight: 34, // offset for back button width
+    marginRight: 34,
   },
   title: {
     fontSize: 20,
@@ -296,6 +324,22 @@ const styles = StyleSheet.create({
     fontSize: 16,
     backgroundColor: '#fafafa',
   },
+  quickZonesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 12,
+  },
+  quickZoneBtn: {
+    backgroundColor: '#eee',
+    padding: 8,
+    borderRadius: 8,
+    margin: 4,
+  },
+  quickZoneBtnText: {
+    color: '#333',
+    fontWeight: '600',
+    fontSize: 12,
+  },
   primaryButton: {
     backgroundColor: '#111',
     padding: 14,
@@ -321,69 +365,23 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
   },
-  coordsText: {
-    fontSize: 13,
-    color: '#555',
-    marginBottom: 12,
-    fontFamily: 'monospace',
-  },
-  insideAlert: {
+  dangerButton: {
     backgroundColor: '#FEE2E2',
+    padding: 14,
     borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#DC2626',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    marginBottom: 8,
   },
-  insideAlertText: {
-    color: '#991B1B',
-    fontWeight: '700',
+  dangerButtonText: {
+    color: '#DC2626',
     fontSize: 15,
-  },
-  safeAlert: {
-    backgroundColor: '#DCFCE7',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#16A34A',
-  },
-  safeAlertText: {
-    color: '#15803D',
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  zoneItem: {
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
-    paddingTop: 10,
-    marginTop: 10,
-  },
-  zoneTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#111',
-  },
-  zoneMeta: {
-    fontSize: 12,
-    color: '#666',
-    marginTop: 2,
-  },
-  jumpLink: {
-    fontSize: 12,
-    color: '#007AFF',
-    marginTop: 6,
     fontWeight: '600',
   },
   hintText: {
     fontSize: 12,
-    color: '#16A34A',
-    marginTop: 12,
-    fontStyle: 'italic',
-  },
-  instrText: {
-    fontSize: 14,
-    color: '#333',
-    marginBottom: 6,
+    color: '#999',
+    lineHeight: 17,
   },
 });
