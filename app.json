@@ -1,0 +1,88 @@
+{
+  "expo": {
+    "name": "PrepareNow",
+    "slug": "preparenow",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yourname.preparenow",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "location",
+          "fetch",
+          "remote-notification",
+          "location",
+          "fetch",
+          "remote-notification",
+          "location",
+          "fetch",
+          "remote-notification",
+          "location",
+          "fetch",
+          "remote-notification"
+        ],
+        "NSLocationWhenInUseUsageDescription": "PrepareNow needs your location to send you emergency alerts when disasters occur near you.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "PrepareNow needs background location access to monitor disaster zones and alert you even when the app is closed.",
+        "NSLocationAlwaysUsageDescription": "PrepareNow monitors your location to send critical emergency alerts.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.yourname.preparenow",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow PrepareNow to use your location to send emergency alerts.",
+          "locationAlwaysPermission": "Allow PrepareNow to monitor disaster zones in the background.",
+          "locationWhenInUsePermission": "Allow PrepareNow to access your location for emergency alerts."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#DC2626"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "f4c4beaa-1bfe-4649-898d-f94a6599680a"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/f4c4beaa-1bfe-4649-898d-f94a6599680a"
+    }
+  }
+}
