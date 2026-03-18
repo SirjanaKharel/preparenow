@@ -1,3 +1,4 @@
+<<<<<<< HEAD
  # PrepareNow
  
  PrepareNow is a disaster preparedness and response app that helps users stay informed, plan ahead, and find nearby shelters during emergencies.
@@ -40,5 +41,5 @@
  - **Firebase** (Authentication, Firestore)
  - **OpenStreetMap & Overpass API** (Shelter data)
  - **JavaScript**
+
  
- ## Screenshots

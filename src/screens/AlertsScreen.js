@@ -218,8 +218,10 @@ export default function AlertsScreen({ navigation }) {
   // List of recent activity to display
   const displayRecent = (() => {
     const seenKeys = new Set();
+    const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
+    const now = Date.now();
     return events
-      .filter(e => e.type === 'enter' || e.type === 'exit')
+      .filter(e => (e.type === 'enter' || e.type === 'exit') && (now - new Date(e.timestamp).getTime() <= FIVE_HOURS_MS))
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
       .filter(e => {
         const k = `${e.type}-${e.zone}-${e.timestamp}`;
