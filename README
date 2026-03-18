@@ -1,0 +1,44 @@
+ # PrepareNow
+ 
+ PrepareNow is a disaster preparedness and response app that helps users stay informed, plan ahead, and find nearby shelters during emergencies.
+ 
+ ## Features
+ 
+ - **Disaster Alerts:** Get real-time alerts for disasters in your area.
+ - **Shelter Finder:** Locate nearby emergency shelters using OpenStreetMap and Overpass API.
+ - **Preparedness Tasks:** Follow checklists and resources to prepare for various disasters.
+ - **User Authentication:** Secure sign-in and sign-up with Firebase.
+ - **Profile & Skills:** Track your preparedness skills and progress.
+ - **Offline Caching:** Shelter data is cached for offline use.
+ 
+ ## Installation
+ 
+ 1. Clone the repository:
+	 ```
+	 git clone https://github.com/SirjanaKharel/preparenow.git
+	 cd preparenow
+	 ```
+ 2. Install dependencies:
+	 ```
+	 npm install
+	 ```
+ 3. Start the app with Expo:
+	 ```
+	 npx expo start
+	 ```
+ 
+ ## Usage
+ 
+ - Open the app on your device or emulator.
+ - Sign up or log in.
+ - View disaster alerts and find nearby shelters.
+ - Complete preparedness tasks and track your progress.
+ 
+ ## Technologies Used
+ 
+ - **React Native** (Expo)
+ - **Firebase** (Authentication, Firestore)
+ - **OpenStreetMap & Overpass API** (Shelter data)
+ - **JavaScript**
+ 
+ ## Screenshots
