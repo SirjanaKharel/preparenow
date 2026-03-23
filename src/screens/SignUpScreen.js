@@ -86,7 +86,7 @@ const SignUpScreen = ({ navigation }) => {
         onPress={handleSignUp}
         disabled={loading}
       />
-      <Text style={styles.toggleText} onPress={() => navigation.replace('SignIn')}>
+      <Text style={styles.toggleText} onPress={() => navigation.navigate('SignIn')}>
         Already have an account? Sign In
       </Text>
     </View>

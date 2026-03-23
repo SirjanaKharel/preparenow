@@ -34,7 +34,6 @@ export default function ProfileScreen({ navigation }) {
     try {
       await auth.signOut();
       setUser(null);
-      navigation.replace('SignIn');
     } catch (err) {
       Alert.alert('Logout Failed', err.message);
     }
