@@ -320,7 +320,6 @@ export const shelterService = {
       return { shelters, coverage: getCoverage(shelters.length), fromCache: false };
 
     } catch (err) {
-      console.error('❌ shelterService.getNearbyShelters error:', err);
       return { shelters: [], coverage: 'none', fromCache: false };
     }
   },
