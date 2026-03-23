@@ -15,6 +15,12 @@ export default function ProfileScreen({ navigation }) {
 
   const [profileName, setProfileName]   = useState(user?.displayName || user?.email || 'User');
   const [profileImage, setProfileImage] = useState(user?.photoURL || null);
+
+  // Update profileName and profileImage when user changes
+  React.useEffect(() => {
+    setProfileName(user?.displayName || user?.email || 'User');
+    setProfileImage(user?.photoURL || null);
+  }, [user]);
   const [editVisible, setEditVisible]   = useState(false);
   const [helpVisible, setHelpVisible]   = useState(false);
   const [nameInput, setNameInput]       = useState(profileName);
@@ -63,8 +69,23 @@ export default function ProfileScreen({ navigation }) {
   const handleSave = async () => {
     setProfileName(nameInput);
     setProfileImage(imageInput);
-    if (setUser && user) setUser({ ...user, displayName: nameInput, photoURL: imageInput });
-    await storageService.savePreferences({ name: nameInput, image: imageInput });
+    try {
+      // Update Firebase Auth profile
+      if (user) {
+        const { updateProfile } = await import('firebase/auth');
+        await updateProfile(user, { displayName: nameInput, photoURL: imageInput });
+      }
+      // Update Firestore user document
+      if (user) {
+        const { doc, setDoc } = await import('firebase/firestore');
+        const { db } = await import('../config/firebase');
+        await setDoc(doc(db, 'users', user.uid), { name: nameInput, image: imageInput }, { merge: true });
+      }
+      if (setUser && user) setUser({ ...user, displayName: nameInput, photoURL: imageInput });
+      await storageService.savePreferences({ name: nameInput, image: imageInput });
+    } catch (err) {
+      Alert.alert('Profile Update Failed', err.message);
+    }
     setEditVisible(false);
   };
 
